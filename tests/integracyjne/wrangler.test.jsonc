@@ -1,0 +1,21 @@
+{
+  // Konfiguracja wyłącznie dla testów integracyjnych (osobna od produkcyjnej).
+  "name": "kasa-kino-test",
+  "main": "./worker-testowy.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [{ "binding": "DB", "database_name": "kasa-kino-test", "database_id": "kasa-kino-test" }],
+  "ratelimits": [
+    { "name": "RL_REZERWACJE_IP", "namespace_id": "9001", "simple": { "limit": 3, "period": 60 } },
+    { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "9002", "simple": { "limit": 3, "period": 60 } }
+  ],
+  "vars": {
+    "RESERVATION_TTL_SECONDS": "120",
+    "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
+    "RATE_LIMIT_PERIOD_SECONDS": "60",
+    "EVENTS_CACHE_SECONDS": "60",
+    "DB_TIMEOUT_MS": "3000",
+    "LOAD_SHED_MAX_READS": "64",
+    "LOAD_SHED_MAX_WRITES": "32"
+  }
+}

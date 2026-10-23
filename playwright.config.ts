@@ -1,0 +1,32 @@
+import { defineConfig, devices } from "@playwright/test";
+
+// E2E na `next dev` ze środowiskiem `e2e` (osobna baza D1, TTL rezerwacji 5 s).
+// Przeglądarka: domyślnie Chromium z Playwright (`npx playwright install chromium`),
+// albo zainstalowany Chrome/Edge: PW_CHANNEL=chrome | msedge.
+const PORT = process.env.E2E_PORT || "3100";
+const kanal = process.env.PW_CHANNEL;
+
+export default defineConfig({
+  testDir: "tests/e2e",
+  timeout: 60_000,
+  expect: { timeout: 10_000 },
+  fullyParallel: false,
+  workers: 1,
+  retries: process.env.CI ? 1 : 0,
+  reporter: [["list"]],
+  globalSetup: "./tests/e2e/rozgrzewka.ts",
+  use: {
+    baseURL: `http://localhost:${PORT}`,
+    locale: "pl-PL",
+    timezoneId: "Europe/Warsaw",
+    trace: "retain-on-failure",
+    ...(kanal ? { channel: kanal } : {}),
+  },
+  projects: [{ name: "desktop", use: { ...devices["Desktop Chrome"], ...(kanal ? { channel: kanal } : {}) } }],
+  webServer: {
+    command: "node scripts/e2e-serwer.mjs",
+    url: `http://localhost:${PORT}/api/events`,
+    reuseExistingServer: !process.env.CI,
+    timeout: 180_000,
+  },
+});
