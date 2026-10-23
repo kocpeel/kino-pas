@@ -1,0 +1,21 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // Mały Worker z Cronem: zwalnia wygasłe rezerwacje i czyści ich dane osobowe.
+  // To tylko optymalizacja: poprawność zapewnia leniwe wygasanie w zapytaniach aplikacji.
+  "name": "kasa-kino-sprzatanie",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "observability": { "enabled": true },
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kasa-kino-db",
+      // Ta sama baza co aplikacja (wrangler.jsonc w katalogu głównym). Podmień na prawdziwe ID.
+      "database_id": "00000000-0000-4000-8000-000000000001",
+      "migrations_dir": "../../migrations"
+    }
+  ]
+}
