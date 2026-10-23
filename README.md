@@ -4,6 +4,7 @@ Rezerwacja i zakup biletów na 3 seanse (2 sale, 8 × 10 foteli). Next.js 16 na 
 przez adapter OpenNext, baza D1, rate limiting przez binding Workers Rate Limiting, sprzątanie
 wygasłych rezerwacji przez osobny Worker z Cron Triggerem.
 
+- Wdrożenie: https://kasa-kino.jajcokgt.workers.dev (Cron: Worker `kasa-kino-sprzatanie`, co minutę)
 - Kontrakt API: [docs/kontrakt-api.md](docs/kontrakt-api.md)
 - Decyzje projektowe (wyścigi, TTL, idempotencja, odporność, wycieki): [docs/decyzje.md](docs/decyzje.md)
 - Treść zadania: [task1.txt](task1.txt)

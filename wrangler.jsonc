@@ -18,9 +18,9 @@
     {
       "binding": "DB",
       "database_name": "kasa-kino-db",
-      // Podmień na ID bazy z dashboardu Cloudflare (D1 → kasa-kino-db → Database ID).
-      // Lokalnie (wrangler/next dev) wartość może zostać taka, jaka jest.
-      "database_id": "00000000-0000-4000-8000-000000000001",
+      // ID bazy z dashboardu Cloudflare (D1 → kasa-kino-db → Database ID).
+      // Lokalnie (wrangler/next dev) to samo ID służy tylko jako klucz bazy w .wrangler/state.
+      "database_id": "c8b109e6-db72-4b43-bcb8-be3264c1f2e6",
       "migrations_dir": "migrations"
     }
   ],

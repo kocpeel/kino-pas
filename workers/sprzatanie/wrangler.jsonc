@@ -6,6 +6,8 @@
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
   "observability": { "enabled": true },
+  // Tylko Cron, bez handlera fetch: nie wystawiamy adresu *.workers.dev.
+  "workers_dev": false,
   "triggers": {
     "crons": ["* * * * *"]
   },
@@ -13,8 +15,8 @@
     {
       "binding": "DB",
       "database_name": "kasa-kino-db",
-      // Ta sama baza co aplikacja (wrangler.jsonc w katalogu głównym). Podmień na prawdziwe ID.
-      "database_id": "00000000-0000-4000-8000-000000000001",
+      // Ta sama baza co aplikacja (wrangler.jsonc w katalogu głównym).
+      "database_id": "c8b109e6-db72-4b43-bcb8-be3264c1f2e6",
       "migrations_dir": "../../migrations"
     }
   ]
