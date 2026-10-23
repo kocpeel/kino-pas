@@ -1,0 +1,3 @@
+# Skopiuj do .dev.vars (poza gitem), żeby nadpisać vars z wrangler.jsonc lokalnie.
+# Krótki TTL ułatwia ręczne testowanie wygasania.
+RESERVATION_TTL_SECONDS=120

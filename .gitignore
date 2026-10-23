@@ -1,0 +1,29 @@
+# zależności
+node_modules/
+
+# Next.js / OpenNext
+.next/
+.next-e2e/
+.open-next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+
+# Wrangler (lokalny stan D1, logi)
+.wrangler/
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+.env
+.env.*
+!.env.example
+
+# testy
+test-results/
+playwright-report/
+blob-report/
+coverage/
+
+# system
+.DS_Store
+Thumbs.db
