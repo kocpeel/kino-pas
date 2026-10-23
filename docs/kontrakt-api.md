@@ -9,12 +9,15 @@ Błędy mają zawsze ten sam kształt:
 
 `details` pojawia się tylko przy błędach walidacji pól (400). Odpowiedzi 429 i 503 mają nagłówek `Retry-After` (sekundy).
 
+Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym ETagiem, dostaje **304 bez treści**
+(tak odpytuje mapa sali, więc sprawdzenie „czy coś się zmieniło" kosztuje kilkadziesiąt bajtów).
+
 ## Endpointy
 
 | Metoda | Ścieżka | Sukces | Błędy |
 |---|---|---|---|
-| GET | `/api/events` | 200 `SeansNaLiscie[]` | 503 |
-| GET | `/api/events/:id` | 200 `{ event, takenSeats }` | 404, 503 |
+| GET | `/api/events` | 200 `SeansNaLiscie[]`, 304 | 503 |
+| GET | `/api/events/:id` | 200 `{ event, takenSeats }`, 304 | 404, 503 |
 | POST | `/api/reservations` | 201 `{ reservationId, expiresAt }` | 400, 404, 409, 413, 422, 429, 503 |
 | POST | `/api/reservations/:id/purchase` | 201 `{ code }` (pierwszy zakup), 200 `{ code }` (powtórka) | 400, 410, 503 |
 
@@ -36,7 +39,8 @@ Błędy mają zawsze ten sam kształt:
 ```
 
 - „Wolny" = `free` albo `reserved` z `expiresAt ≤ teraz` (leniwe wygasanie).
-- Cache: `Cache-Control: public, max-age=0, s-maxage=60, stale-while-revalidate=60, stale-if-error=600`.
+- Świeżość: najwyżej 5 s (`EVENTS_CACHE_SECONDS`). Rezerwacja od razu unieważnia cache w izolacie, który ją przyjął.
+- Cache: `Cache-Control: public, max-age=0, s-maxage=5, stale-while-revalidate=5, stale-if-error=600`.
 - Tryb awaryjny (D1 zawodzi albo przeciążenie): 200 z ostatnimi znanymi danymi i nagłówkami
   `X-Data-Stale: true`, `X-Data-Age: <s>`, `Cache-Control: no-store`. Bez danych w cache: 503.
 
@@ -50,7 +54,7 @@ Błędy mają zawsze ten sam kształt:
 }
 ```
 
-- `takenSeats` to wyłącznie identyfikatory foteli. Nigdy imiona ani e-maile.
+- `takenSeats` to wyłącznie identyfikatory foteli, posortowane (ten sam stan = ten sam ETag). Nigdy imiona ani e-maile.
 - „Zajęty" = `purchased` albo `reserved` z `expiresAt > teraz`.
 - Cache: `public, max-age=1`. Nieaktualna mapa nie szkodzi: ostatnie słowo ma warunkowy zapis (409).
 

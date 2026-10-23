@@ -45,6 +45,11 @@ export function zaleznosci(opcje: OpcjeZaleznosci = {}): Zaleznosci & { zegar: Z
   };
 }
 
+/** Żądanie GET (odczyty), opcjonalnie z nagłówkami, np. If-None-Match. */
+export function zadanieGet(sciezka = "/api/events", naglowki: Record<string, string> = {}): Request {
+  return new Request(`https://kasa.test${sciezka}`, { headers: naglowki });
+}
+
 export interface DaneTestowe {
   eventId?: string;
   seatId: string;

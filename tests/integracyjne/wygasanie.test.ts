@@ -7,13 +7,13 @@ import { utworzZegarTestowy } from "../../src/lib/czas";
 import { zwolnijWygasleRezerwacje } from "../../src/lib/db/zapytania-miejsca";
 import { obsluzSzczegolySeansu } from "../../src/lib/http/trasy";
 import cron, { sprzataj } from "../../workers/sprzatanie/src/index";
-import { kup, SEANS, TTL_MS, wierszMiejsca, zarezerwuj, zasiej, zaleznosci } from "./pomocnicze";
+import { kup, SEANS, TTL_MS, wierszMiejsca, zadanieGet, zarezerwuj, zasiej, zaleznosci } from "./pomocnicze";
 
 beforeEach(() => zasiej());
 
 async function zajete(z: ReturnType<typeof zaleznosci>): Promise<string[]> {
   z.cache.szczegoly.wyczysc();
-  const odp = await obsluzSzczegolySeansu(() => z, SEANS);
+  const odp = await obsluzSzczegolySeansu(zadanieGet(), () => z, SEANS);
   return ((await odp.json()) as { takenSeats: string[] }).takenSeats;
 }
 

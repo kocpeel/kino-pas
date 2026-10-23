@@ -80,7 +80,11 @@ export async function pobierzSzczegoly(z: Zaleznosci, eventId: string): Promise<
   }
 }
 
-/** Po udanym zapisie ten izolat od razu pokazuje nowy stan mapy. */
-export function uniewaznijSzczegoly(z: Zaleznosci, eventId: string): void {
+/**
+ * Po udanym zapisie ten izolat od razu pokazuje nowy stan mapy i repertuaru.
+ * Inne izolaty dogonią go po TTL cache (lista: EVENTS_CACHE_SECONDS, mapa: 1 s).
+ */
+export function uniewaznijPoZapisie(z: Zaleznosci, eventId: string): void {
   z.cache.szczegoly.usun(eventId);
+  z.cache.lista.usun(KLUCZ_LISTY);
 }

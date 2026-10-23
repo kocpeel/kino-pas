@@ -74,6 +74,7 @@ export interface Odpowiedz<T> {
   status: number;
   /** Różnica zegara serwera względem przeglądarki (ms), z nagłówka Date. */
   przesuniecieZegara: number;
+  etag: string | null;
 }
 
 function przesuniecieZNaglowka(odpowiedz: Response, wyslano: number, odebrano: number): number {
@@ -98,6 +99,9 @@ async function wykonaj<T>(url: string, init: RequestInit, sygnal?: AbortSignal, 
     polaczony.sprzatnij();
   }
   const przesuniecieZegara = przesuniecieZNaglowka(odpowiedz, wyslano, Date.now());
+  const etag = odpowiedz.headers.get("etag");
+  // 304: klient ma aktualną wersję (wysłał If-None-Match), treści nie ma.
+  if (odpowiedz.status === 304) return { dane: undefined as T, status: 304, przesuniecieZegara, etag };
   let cialo: unknown = null;
   try {
     cialo = await odpowiedz.json();
@@ -115,7 +119,7 @@ async function wykonaj<T>(url: string, init: RequestInit, sygnal?: AbortSignal, 
       b.details,
     );
   }
-  return { dane: cialo as T, status: odpowiedz.status, przesuniecieZegara };
+  return { dane: cialo as T, status: odpowiedz.status, przesuniecieZegara, etag };
 }
 
 function czyPonowic(blad: unknown): blad is BladApi {
@@ -145,11 +149,32 @@ export interface OpcjeZadania {
   timeoutMs?: number;
 }
 
-export function pobierzSzczegolySeansu(eventId: string, opcje: OpcjeZadania = {}): Promise<SzczegolySeansu> {
-  const { sygnal, proby = 3, timeoutMs } = opcje;
-  return zPonowieniami(proby, sygnal, () =>
-    wykonaj<SzczegolySeansu>(`/api/events/${encodeURIComponent(eventId)}`, { cache: "no-store" }, sygnal, timeoutMs),
-  ).then((o) => o.dane);
+/** Dane razem z ETagiem, pod którym serwer je podał. */
+export interface Wersja<T> {
+  dane: T;
+  etag: string | null;
+}
+
+/**
+ * Stan sali. Z `poprzednia` wysyła If-None-Match: gdy nic się nie zmieniło, serwer odpowiada 304
+ * bez treści, a funkcja zwraca TEN SAM obiekt `poprzednia` (łatwo rozpoznać brak zmian).
+ */
+export async function pobierzSzczegolySeansu(
+  eventId: string,
+  opcje: OpcjeZadania & { poprzednia?: Wersja<SzczegolySeansu> | undefined } = {},
+): Promise<Wersja<SzczegolySeansu>> {
+  const { sygnal, proby = 3, timeoutMs, poprzednia } = opcje;
+  const naglowki: Record<string, string> = poprzednia?.etag ? { "If-None-Match": poprzednia.etag } : {};
+  const odpowiedz = await zPonowieniami(proby, sygnal, () =>
+    wykonaj<SzczegolySeansu>(
+      `/api/events/${encodeURIComponent(eventId)}`,
+      { cache: "no-store", headers: naglowki },
+      sygnal,
+      timeoutMs,
+    ),
+  );
+  if (odpowiedz.status === 304 && poprzednia) return poprzednia;
+  return { dane: odpowiedz.dane, etag: odpowiedz.etag };
 }
 
 export function nowyKluczIdempotencji(): string {

@@ -3,7 +3,7 @@ import { obsluzSzczegolySeansu } from "@/lib/http/trasy";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_zadanie: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
+export async function GET(zadanie: Request, { params }: { params: Promise<{ id: string }> }): Promise<Response> {
   const { id } = await params;
-  return obsluzSzczegolySeansu(zaleznosciZadania, id);
+  return obsluzSzczegolySeansu(zadanie, zaleznosciZadania, id);
 }

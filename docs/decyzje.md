@@ -64,26 +64,50 @@ odpowiedzieć od razu). Cloudflare Queues + DLQ mają sens przy mailach z potwie
 ## 6. Pamięć i wycieki
 
 - Serwer: zero rosnących `Map`/tablic i `setInterval` na poziomie modułu. Jedyny stan izolatu to dwa liczniki
-  strażnika przeciążenia i cache z limitem wpisów i TTL, oznaczone `// stan-modulu:`.
+  strażnika przeciążenia i cache z limitem wpisów i TTL, trzymane na `globalThis` (jeden egzemplarz na izolat, patrz pkt 7).
   Pilnuje tego `scripts/sprawdz-stan-modulu.mjs` (`npm run lint:wycieki`, uruchamiany też w testach jednostkowych).
 - Klient: każdy `useEffect` z timerem/fetchem ma cleanup; polling pauzuje na ukrytej karcie i zatrzymuje się po
   kilku porażkach; licznik liczony z `expiresAt`, jeden timer. Testy sprawdzają `vi.getTimerCount() === 0`
   po odmontowaniu.
 
-## 7. Dane między ekranami
+## 7. Świeżość odczytów i koszt odświeżania mapy
+
+**Repertuar.** Lista seansów z liczbą wolnych miejsc ma cache izolatu na 5 s (`EVENTS_CACHE_SECONDS`), a udana
+rezerwacja od razu go unieważnia. Ważne: Next.js pakuje każdą stronę i każdy route handler osobno, z własnymi kopiami
+modułów, więc cache w zmiennej modułu NIE był wspólny dla strony repertuaru i API rezerwacji (rezerwacja czyściła cache
+API, a strona dalej pokazywała stare liczby). Cache i strażnik przeciążenia są dlatego trzymane na `globalThis`
+(klucze `Symbol.for`), czyli naprawdę raz na izolat. Inne izolaty dogonią zmianę najpóźniej po 5 s.
+Po stronie przeglądarki repertuar odświeża się sam po „Wstecz" (Next.js pokazuje wtedy stary render z pamięci routera),
+po powrocie na kartę i co 60 s w tle, tylko przy widocznej karcie.
+
+**Mapa sali.** Klient odpytuje `GET /api/events/:id`, ale tanio:
+
+| Co | Efekt |
+|---|---|
+| Interwał adaptacyjny: 5 s, a gdy nic się nie zmienia ×1,5 aż do 30 s; powrót do 5 s po zmianie, po powrocie na kartę i przy interakcji z mapą | Spokojna sala: ok. 12 zapytań w 5 min zamiast 60. |
+| `ETag` + `If-None-Match` → 304 bez treści | Sprawdzenie bez zmian to kilkadziesiąt bajtów zamiast pełnej odpowiedzi. |
+| Indeks `(eventId, status, expiresAt)` i warunek `status IN (...)` | D1 czyta tylko zajęte wiersze seansu, a nie 80 foteli przy każdym zapytaniu (zapytanie jest pokrywane indeksem). |
+| Cache szczegółów w izolacie 1 s | Tłum oglądających w jednym izolacie = jedno zapytanie do D1 na sekundę. |
+| Pauza na ukrytej karcie, zatrzymanie po 4 porażkach | Zero zapytań z kart w tle. |
+
+Poprawność od tego nie zależy: nieaktualna mapa najwyżej pokaże wolny fotel, który jest już zajęty, a zapis i tak
+odpowie 409. Prawdziwy „push" (Durable Object na seans + WebSocket z hibernacją, rozsyłanie zmian i alarm przy wygaśnięciu)
+dałby aktualizację natychmiast i bez odpytywania, ale plan Etapu I świadomie wyklucza długie połączenia. To kandydat na kolejny etap.
+
+## 8. Dane między ekranami
 
 Kontrakt nie ma GET rezerwacji, więc `eventId`, `seatId` i `reservationId` są w adresie, a `expiresAt`, imię,
 e-mail i kod w `sessionStorage` (z `try/catch`). Dane osobowe nigdy nie trafiają do URL. Bilet otwarty w nowej
 karcie odtwarza kod idempotentnym POST zakupu. Uwaga: dla jeszcze nieopłaconej, ważnej rezerwacji wejście na
 `/bilet/:id` ją kupi, bo tak działa zakup bez płatności w Etapie I; do strony biletu prowadzi tylko udany zakup.
 
-## 8. Testy: co dowodzą, a czego nie
+## 9. Testy: co dowodzą, a czego nie
 
 Lokalny D1 serializuje zapisy, więc testy W1–W6 dowodzą poprawności **warunków w zapytaniach**, a nie zachowania
 pod prawdziwym opóźnieniem sieci. Do tego jest `tests/obciazenie/w1-ten-sam-fotel.js` (k6) na środowisku
 testowym w Cloudflare.
 
-## 9. Środowisko i narzędzia
+## 10. Środowisko i narzędzia
 
 - Next.js 16 + `@opennextjs/cloudflare` 1.20, Wrangler 4, D1, Rate Limiting binding.
 - `@cloudflare/vitest-pool-workers` zostało przemianowane na `@cloudflare/vitest-plugin` (API `cloudflareTest()`).

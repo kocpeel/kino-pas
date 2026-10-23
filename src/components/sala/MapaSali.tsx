@@ -4,17 +4,22 @@
 // Kliknięcie wolnego fotela tylko przenosi do formularza: samo w sobie niczego nie rezerwuje.
 
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { usePolling } from "@/hooks/usePolling";
+import { czyPrzywroconyRender } from "@/hooks/usePrzywroconyRender";
 import { Baner } from "@/components/ui/Baner";
 import { Przycisk } from "@/components/ui/Przycisk";
 import { rzedySali } from "@/lib/domain/uklad-sali";
-import { pobierzSzczegolySeansu } from "@/lib/klient/api";
+import { pobierzSzczegolySeansu, type Wersja } from "@/lib/klient/api";
+import type { SzczegolySeansu } from "@/lib/domain/typy";
 import { CzasOdswiezenia } from "./CzasOdswiezenia";
 import { Fotel } from "./Fotel";
 import { Legenda } from "./Legenda";
 
+/** Odświeżanie, gdy na sali coś się dzieje albo użytkownik z nią pracuje. */
 export const INTERWAL_ODSWIEZANIA_MS = 5000;
+/** Najrzadsze odświeżanie, gdy kolejne odpowiedzi nic nie zmieniają (304). */
+export const MAX_INTERWAL_ODSWIEZANIA_MS = 30_000;
 
 interface Props {
   eventId: string;
@@ -23,22 +28,45 @@ interface Props {
   poczatkoweZajete: string[];
   /** Fotel, który przy próbie rezerwacji okazał się zajęty (powrót po 409). */
   swiezoZajety?: string | null;
+  /** Znacznik renderu serwera: ten sam przy ponownym montażu = dane z pamięci routera („Wstecz"). */
+  wyrenderowano?: number;
 }
 
-export function MapaSali({ eventId, rzedy, miejscaWRzedzie, poczatkoweZajete, swiezoZajety = null }: Props) {
+export function MapaSali({
+  eventId,
+  rzedy,
+  miejscaWRzedzie,
+  poczatkoweZajete,
+  swiezoZajety = null,
+  wyrenderowano,
+}: Props) {
   const router = useRouter();
   const literyRzedow = useMemo(() => rzedySali({ rzedy, miejscaWRzedzie }), [rzedy, miejscaWRzedzie]);
   const numery = useMemo(() => Array.from({ length: miejscaWRzedzie }, (_, i) => i + 1), [miejscaWRzedzie]);
 
+  // Po „Wstecz" stan z pamięci routera może być stary: pierwsze sprawdzenie od razu.
+  const [pierwszeZaMs, ustawPierwszeZaMs] = useState(INTERWAL_ODSWIEZANIA_MS);
+  useEffect(() => {
+    if (wyrenderowano !== undefined && czyPrzywroconyRender(`mapa:${eventId}`, wyrenderowano)) ustawPierwszeZaMs(0);
+  }, [eventId, wyrenderowano]);
+
   const pobierz = useCallback(
-    (sygnal: AbortSignal) => pobierzSzczegolySeansu(eventId, { sygnal, proby: 1 }),
+    (sygnal: AbortSignal, poprzednia: Wersja<SzczegolySeansu> | undefined) =>
+      pobierzSzczegolySeansu(eventId, { sygnal, proby: 1, poprzednia }),
     [eventId],
   );
-  const polling = usePolling(pobierz, { interwalMs: INTERWAL_ODSWIEZANIA_MS, maxPorazek: 4 });
+  const polling = usePolling(pobierz, {
+    interwalMs: INTERWAL_ODSWIEZANIA_MS,
+    maxInterwalMs: MAX_INTERWAL_ODSWIEZANIA_MS,
+    pierwszeZaMs,
+    maxPorazek: 4,
+    // 304 zwraca ten sam obiekt, więc „bez zmian" = ta sama referencja.
+    czyZmiana: (poprzednia, nowa) => poprzednia !== nowa,
+  });
 
   // Zestaw jest podmieniany przy każdej odpowiedzi, nigdy rozszerzany.
   const zajete = useMemo(() => {
-    const zestaw = new Set(polling.dane?.takenSeats ?? poczatkoweZajete);
+    const zestaw = new Set(polling.dane?.dane.takenSeats ?? poczatkoweZajete);
     if (swiezoZajety && !polling.dane) zestaw.add(swiezoZajety);
     return zestaw;
   }, [polling.dane, poczatkoweZajete, swiezoZajety]);
@@ -102,9 +130,11 @@ export function MapaSali({ eventId, rzedy, miejscaWRzedzie, poczatkoweZajete, sw
   };
 
   const styl = { "--kolumny": miejscaWRzedzie } as CSSProperties;
+  const { przyspiesz } = polling;
 
   return (
-    <div className="sala" style={styl}>
+    // Użytkownik patrzy na mapę albo nią steruje: odświeżamy z bazową częstotliwością.
+    <div className="sala" style={styl} onPointerEnter={przyspiesz} onFocusCapture={przyspiesz}>
       {swiezoZajety ? (
         <div className="banery">
           <Baner rodzaj="ostrzezenie" tytul="Ten fotel został właśnie zajęty" rola="alert">

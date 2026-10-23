@@ -77,3 +77,27 @@ describe("useCountdown", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 });
+
+describe("usePolling: adaptacyjny interwał", () => {
+  it("bez zmian interwał rośnie ×1,5 aż do maksimum, zmiana wraca do bazowego", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+    const stale = { v: 1 };
+    let odpowiedz: object = stale;
+    const czasy: number[] = [];
+    const pobierz = vi.fn(async () => (czasy.push(Date.now()), odpowiedz));
+    renderHook(() => usePolling(pobierz, { interwalMs: 1000, maxInterwalMs: 4000 }));
+    await act(() => vi.advanceTimersByTimeAsync(20_000));
+    const odstepy = czasy.slice(1).map((t, i) => t - czasy[i]!);
+    // 1. odpowiedź to zmiana (brak poprzednich), potem same „bez zmian".
+    expect(odstepy.slice(0, 5)).toEqual([1000, 1500, 2250, 3375, 4000]);
+
+    odpowiedz = { v: 2 };
+    const przed = czasy.length;
+    await act(() => vi.advanceTimersByTimeAsync(10_000));
+    const poZmianie = czasy.slice(przed);
+    // Zapytanie, które przyniosło zmianę, i następne: znowu odstęp bazowy, potem znów rośnie.
+    expect(poZmianie[1]! - poZmianie[0]!).toBe(1000);
+    expect(poZmianie[2]! - poZmianie[1]!).toBe(1500);
+  });
+});

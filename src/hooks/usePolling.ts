@@ -2,16 +2,27 @@
 
 // Okresowe odświeżanie z: AbortController na każde żądanie, pauzą przy ukrytej karcie,
 // backoffem przy błędach i zatrzymaniem po kilku porażkach (wtedy `odswiez()` wznawia).
+//
+// Interwał jest adaptacyjny: gdy kolejne odpowiedzi nic nie zmieniają, rośnie (× `mnoznik`
+// aż do `maxInterwalMs`), a wraca do `interwalMs`, gdy coś się zmieni, użytkownik wróci na kartę
+// albo zawoła `przyspiesz()` (np. przy interakcji z mapą). Na spokojnej sali to kilka razy mniej żądań.
 // Wszystkie timery i nasłuchy są sprzątane przy odmontowaniu.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { czyPrzerwane, opoznienieBackoff } from "@/lib/klient/api";
 
 export interface OpcjePollingu<T> {
+  /** Interwał bazowy (po zmianie danych i po interakcji). */
   interwalMs: number;
+  /** Górna granica interwału, gdy dane się nie zmieniają. Domyślnie = interwalMs (bez adaptacji). */
+  maxInterwalMs?: number;
+  mnoznik?: number;
+  /** Opóźnienie pierwszego pobrania. Domyślnie interwalMs (dane startowe dał serwer). */
+  pierwszeZaMs?: number;
   maxPorazek?: number;
   wlaczony?: boolean;
-  poczatkoweDane?: T;
+  /** Czy nowe dane różnią się od poprzednich. Domyślnie porównanie referencji. */
+  czyZmiana?: (poprzednie: T | undefined, nowe: T) => boolean;
 }
 
 export interface StanPollingu<T> {
@@ -19,9 +30,11 @@ export interface StanPollingu<T> {
   blad: Error | undefined;
   /** true po `maxPorazek` porażkach z rzędu; polling stoi do wywołania `odswiez()`. */
   zatrzymany: boolean;
-  /** Epoch ms ostatniego udanego pobrania (null przed pierwszym). */
+  /** Epoch ms ostatniego udanego sprawdzenia (także „bez zmian"); null przed pierwszym. */
   ostatniaAktualizacja: number | null;
   odswiez: () => void;
+  /** Wraca do interwału bazowego (np. użytkownik właśnie patrzy na mapę). */
+  przyspiesz: () => void;
 }
 
 interface Stan<T> {
@@ -31,33 +44,50 @@ interface Stan<T> {
   ostatniaAktualizacja: number | null;
 }
 
+const domyslnaZmiana = <T,>(a: T | undefined, b: T) => !Object.is(a, b);
+
 export function usePolling<T>(
-  pobierz: (sygnal: AbortSignal) => Promise<T>,
-  { interwalMs, maxPorazek = 4, wlaczony = true, poczatkoweDane }: OpcjePollingu<T>,
+  pobierz: (sygnal: AbortSignal, poprzednie: T | undefined) => Promise<T>,
+  {
+    interwalMs,
+    maxInterwalMs = interwalMs,
+    mnoznik = 1.5,
+    pierwszeZaMs,
+    maxPorazek = 4,
+    wlaczony = true,
+    czyZmiana = domyslnaZmiana,
+  }: OpcjePollingu<T>,
 ): StanPollingu<T> {
   const [stan, ustawStan] = useState<Stan<T>>({
-    dane: poczatkoweDane,
+    dane: undefined,
     blad: undefined,
     zatrzymany: false,
     ostatniaAktualizacja: null,
   });
   const [cykl, ustawCykl] = useState(0);
   const pobierzRef = useRef(pobierz);
+  const czyZmianaRef = useRef(czyZmiana);
   const natychmiastRef = useRef(false);
+  const przyspieszRef = useRef<() => void>(() => {});
 
   useEffect(() => {
     pobierzRef.current = pobierz;
+    czyZmianaRef.current = czyZmiana;
   });
 
   useEffect(() => {
     if (!wlaczony) return;
     let aktywny = true;
     let porazki = 0;
+    let biezacyInterwal = interwalMs;
+    let poprzednie: T | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let zaplanowanoNa = 0;
     let kontroler: AbortController | null = null;
 
     const zaplanuj = (ms: number) => {
       clearTimeout(timer);
+      zaplanowanoNa = Date.now() + ms;
       timer = setTimeout(krok, ms);
     };
 
@@ -67,11 +97,14 @@ export function usePolling<T>(
       if (document.visibilityState === "hidden") return;
       kontroler = new AbortController();
       try {
-        const dane = await pobierzRef.current(kontroler.signal);
+        const dane = await pobierzRef.current(kontroler.signal, poprzednie);
         if (!aktywny) return;
         porazki = 0;
+        const zmiana = czyZmianaRef.current(poprzednie, dane);
+        biezacyInterwal = zmiana ? interwalMs : Math.min(maxInterwalMs, Math.round(biezacyInterwal * mnoznik));
+        poprzednie = dane;
         ustawStan({ dane, blad: undefined, zatrzymany: false, ostatniaAktualizacja: Date.now() });
-        zaplanuj(interwalMs);
+        zaplanuj(biezacyInterwal);
       } catch (blad) {
         if (!aktywny || czyPrzerwane(blad)) return;
         porazki++;
@@ -83,8 +116,16 @@ export function usePolling<T>(
       }
     }
 
+    przyspieszRef.current = () => {
+      if (!aktywny || porazki >= maxPorazek) return;
+      biezacyInterwal = interwalMs;
+      // Następne sprawdzenie najpóźniej za interwał bazowy.
+      if (!kontroler && zaplanowanoNa - Date.now() > interwalMs) zaplanuj(interwalMs);
+    };
+
     const naZmianeWidocznosci = () => {
       if (document.visibilityState === "visible") {
+        biezacyInterwal = interwalMs;
         if (porazki < maxPorazek) zaplanuj(0);
       } else {
         clearTimeout(timer);
@@ -93,16 +134,17 @@ export function usePolling<T>(
     };
 
     document.addEventListener("visibilitychange", naZmianeWidocznosci);
-    zaplanuj(natychmiastRef.current ? 0 : interwalMs);
+    zaplanuj(natychmiastRef.current ? 0 : (pierwszeZaMs ?? interwalMs));
     natychmiastRef.current = false;
 
     return () => {
       aktywny = false;
+      przyspieszRef.current = () => {};
       clearTimeout(timer);
       kontroler?.abort();
       document.removeEventListener("visibilitychange", naZmianeWidocznosci);
     };
-  }, [interwalMs, maxPorazek, wlaczony, cykl]);
+  }, [interwalMs, maxInterwalMs, mnoznik, pierwszeZaMs, maxPorazek, wlaczony, cykl]);
 
   const odswiez = useCallback(() => {
     natychmiastRef.current = true;
@@ -110,5 +152,7 @@ export function usePolling<T>(
     ustawCykl((c) => c + 1);
   }, []);
 
-  return { ...stan, odswiez };
+  const przyspiesz = useCallback(() => przyspieszRef.current(), []);
+
+  return { ...stan, odswiez, przyspiesz };
 }

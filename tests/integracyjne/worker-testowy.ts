@@ -10,9 +10,9 @@ export default {
     const { pathname } = new URL(zadanie.url);
     const metoda = zadanie.method;
     let m: RegExpMatchArray | null;
-    if (metoda === "GET" && pathname === "/api/events") return obsluzListeSeansow(dostawca);
+    if (metoda === "GET" && pathname === "/api/events") return obsluzListeSeansow(zadanie, dostawca);
     if (metoda === "GET" && (m = pathname.match(/^\/api\/events\/([^/]+)$/))) {
-      return obsluzSzczegolySeansu(dostawca, decodeURIComponent(m[1] as string));
+      return obsluzSzczegolySeansu(zadanie, dostawca, decodeURIComponent(m[1] as string));
     }
     if (metoda === "POST" && pathname === "/api/reservations") return obsluzRezerwacje(zadanie, dostawca);
     if (metoda === "POST" && (m = pathname.match(/^\/api\/reservations\/([^/]+)\/purchase$/))) {

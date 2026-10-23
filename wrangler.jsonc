@@ -38,7 +38,7 @@
     // Ile aktywnych rezerwacji może mieć jeden e-mail naraz (0 = bez limitu).
     "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
     "RATE_LIMIT_PERIOD_SECONDS": "60",
-    "EVENTS_CACHE_SECONDS": "60",
+    "EVENTS_CACHE_SECONDS": "5",
     "DB_TIMEOUT_MS": "3000",
     "LOAD_SHED_MAX_READS": "64",
     "LOAD_SHED_MAX_WRITES": "32"
@@ -66,7 +66,7 @@
         "RESERVATION_TTL_SECONDS": "5",
         "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
         "RATE_LIMIT_PERIOD_SECONDS": "60",
-        "EVENTS_CACHE_SECONDS": "1",
+        "EVENTS_CACHE_SECONDS": "5",
         "DB_TIMEOUT_MS": "3000",
         "LOAD_SHED_MAX_READS": "64",
         "LOAD_SHED_MAX_WRITES": "32"

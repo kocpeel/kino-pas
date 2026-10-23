@@ -4,7 +4,9 @@
 import { KartaSeansu } from "@/components/repertuar/KartaSeansu";
 import { Baner } from "@/components/ui/Baner";
 import { LinkPrzycisk } from "@/components/ui/Przycisk";
+import { OdswiezanieRepertuaru } from "@/components/repertuar/OdswiezanieRepertuaru";
 import { Kroki } from "@/components/uklad/Kroki";
+import { zegarSystemowy } from "@/lib/czas";
 import { zaleznosciZadania } from "@/lib/db/kontekst";
 import type { SeansNaLiscie } from "@/lib/domain/typy";
 import { pobierzRepertuar } from "@/lib/http/odczyty";
@@ -26,6 +28,7 @@ export default async function StronaRepertuaru() {
 
   return (
     <>
+      <OdswiezanieRepertuaru wyrenderowano={zegarSystemowy.teraz()} />
       <Kroki aktywny={1} />
       <h1 className="tytul-strony">Repertuar</h1>
       <p className="podtytul">Wybierz seans, a potem miejsce na mapie sali.</p>

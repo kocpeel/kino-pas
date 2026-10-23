@@ -9,6 +9,7 @@ import { IkonaWstecz } from "@/components/ui/Ikony";
 import { Karta } from "@/components/ui/Karta";
 import { LinkPrzycisk } from "@/components/ui/Przycisk";
 import { Kroki } from "@/components/uklad/Kroki";
+import { zegarSystemowy } from "@/lib/czas";
 import { czyPoprawneMiejsce } from "@/lib/domain/uklad-sali";
 import { formatujTermin } from "@/lib/format";
 import { parametr, wczytajSeans } from "@/lib/strony";
@@ -70,6 +71,7 @@ export default async function StronaSali({ params, searchParams }: Props) {
               miejscaWRzedzie={stan.dane.event.seatsPerRow}
               poczatkoweZajete={stan.dane.takenSeats}
               swiezoZajety={swiezoZajety}
+              wyrenderowano={zegarSystemowy.teraz()}
             />
           </Karta>
         </>

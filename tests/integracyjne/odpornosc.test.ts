@@ -7,6 +7,7 @@ import { StraznikPrzeciazenia } from "../../src/lib/resilience/przeciazenie";
 import {
   kup,
   SEANS,
+  zadanieGet,
   zadanieRezerwacji,
   zarezerwuj,
   zasiej,
@@ -88,7 +89,7 @@ describe("load shedding", () => {
     expect(odrzucona.cialo.error).toBe("overloaded");
     expect(odrzucona.naglowki.get("retry-after")).toBe("2");
 
-    const lista = await obsluzListeSeansow(() => z);
+    const lista = await obsluzListeSeansow(zadanieGet(), () => z);
     expect(lista.status).toBe(503);
 
     const zakup = await kup(z, r.cialo.reservationId);
@@ -102,10 +103,10 @@ describe("load shedding", () => {
     const straznik = new StraznikPrzeciazenia({ maxOdczytow: 4, maxZapisow: 4 });
     const zegar = utworzZegarTestowy();
     const z = zaleznosci({ straznik, zegar });
-    expect((await obsluzListeSeansow(() => z)).status).toBe(200);
+    expect((await obsluzListeSeansow(zadanieGet(), () => z)).status).toBe(200);
     zegar.przewin(61_000); // cache już nieświeży
     const zajete = [straznik.wejdz("zakup"), straznik.wejdz("zakup"), straznik.wejdz("zakup")];
-    const odp = await obsluzListeSeansow(() => z);
+    const odp = await obsluzListeSeansow(zadanieGet(), () => z);
     expect(odp.status).toBe(200);
     expect(odp.headers.get("x-data-stale")).toBe("true");
     zajete.forEach((zwolnij) => zwolnij());
@@ -116,13 +117,13 @@ describe("awaria bazy", () => {
   it("lista seansów z cache z oznaczeniem: dane sprzed chwili", async () => {
     const zegar = utworzZegarTestowy();
     const z = zaleznosci({ zegar });
-    const swieza = await obsluzListeSeansow(() => z);
+    const swieza = await obsluzListeSeansow(zadanieGet(), () => z);
     const dane = await swieza.json();
     expect(swieza.headers.get("x-data-stale")).toBeNull();
 
     zegar.przewin(5 * 60_000);
     const awaria = { ...z, db: zepsutaBaza() };
-    const zCache = await obsluzListeSeansow(() => awaria);
+    const zCache = await obsluzListeSeansow(zadanieGet(), () => awaria);
     expect(zCache.status).toBe(200);
     expect(zCache.headers.get("x-data-stale")).toBe("true");
     expect(zCache.headers.get("cache-control")).toBe("no-store");
@@ -131,7 +132,7 @@ describe("awaria bazy", () => {
 
   it("bez cache lista → 503, nie 500", async () => {
     const z = zaleznosci({ db: zepsutaBaza() });
-    const odp = await obsluzListeSeansow(() => z);
+    const odp = await obsluzListeSeansow(zadanieGet(), () => z);
     expect(odp.status).toBe(503);
     expect(odp.headers.get("retry-after")).not.toBeNull();
   });
@@ -142,7 +143,7 @@ describe("awaria bazy", () => {
     expect(rezerwacja.status).toBe(503);
     expect(rezerwacja.cialo.error).toBe("unavailable");
     expect((await kup(z, "0f8fad5b-d9cb-469f-a165-70867728950e")).status).toBe(503);
-    expect((await obsluzSzczegolySeansu(() => z, SEANS)).status).toBe(503);
+    expect((await obsluzSzczegolySeansu(zadanieGet(), () => z, SEANS)).status).toBe(503);
   });
 
   it("brak bindingu D1 → 503", async () => {
@@ -204,8 +205,8 @@ describe("błędne wejście → kontrolowane 4xx, nigdy 500", () => {
   });
 
   it("nieistniejący seans w szczegółach → 404", async () => {
-    expect((await obsluzSzczegolySeansu(z, "nie-ma")).status).toBe(404);
-    expect((await obsluzSzczegolySeansu(z, "../../etc/passwd")).status).toBe(404);
+    expect((await obsluzSzczegolySeansu(zadanieGet(), z, "nie-ma")).status).toBe(404);
+    expect((await obsluzSzczegolySeansu(zadanieGet(), z, "../../etc/passwd")).status).toBe(404);
   });
 });
 
@@ -217,8 +218,8 @@ describe("prywatność", () => {
     await kup(zz, r.cialo.reservationId);
     zz.cache.szczegoly.wyczysc();
 
-    const szczegoly = await (await obsluzSzczegolySeansu(() => zz, SEANS)).text();
-    const lista = await (await obsluzListeSeansow(() => zz)).text();
+    const szczegoly = await (await obsluzSzczegolySeansu(zadanieGet(), () => zz, SEANS)).text();
+    const lista = await (await obsluzListeSeansow(zadanieGet(), () => zz)).text();
     for (const tekst of [szczegoly, lista]) {
       expect(tekst).not.toMatch(/Tajemnicza|Inna Osoba|tajne@|inna@|reservationId|code/);
     }

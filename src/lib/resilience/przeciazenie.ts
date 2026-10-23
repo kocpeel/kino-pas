@@ -69,10 +69,14 @@ export class StraznikPrzeciazenia {
   }
 }
 
-// stan-modulu: dwie liczby całkowite na izolat, ograniczone limitami (nie rosną).
-const straznikIzolatu = new StraznikPrzeciazenia({ maxOdczytow: 64, maxZapisow: 32 });
+// Jeden strażnik na izolat, wspólny dla wszystkich stron i route handlerów. Next.js pakuje je osobno
+// (osobne kopie modułów), więc trzymamy go na globalThis, a nie w zmiennej modułu.
+// To tylko dwie liczby całkowite ograniczone limitami (nie rosną).
+const KLUCZ_STRAZNIKA = Symbol.for("kasa-kino.straznik-przeciazenia");
 
 export function straznikDlaIzolatu(limity: LimityPrzeciazenia): StraznikPrzeciazenia {
-  straznikIzolatu.ustawLimity(limity);
-  return straznikIzolatu;
+  const globalny = globalThis as { [KLUCZ_STRAZNIKA]?: StraznikPrzeciazenia };
+  const straznik = (globalny[KLUCZ_STRAZNIKA] ??= new StraznikPrzeciazenia(limity));
+  straznik.ustawLimity(limity);
+  return straznik;
 }

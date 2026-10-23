@@ -75,7 +75,7 @@ describe("MapaSali: klawiatura", () => {
 describe("MapaSali: odświeżanie", () => {
   it("podmienia zajęte fotele po odpowiedzi serwera", async () => {
     vi.useFakeTimers();
-    pobierzSzczegolySeansu.mockResolvedValue({ event: {}, takenSeats: ["C3"] });
+    pobierzSzczegolySeansu.mockResolvedValue({ dane: { event: {}, takenSeats: ["C3"] }, etag: "W/\"1\"" });
     renderuj(["A1"]);
     expect(fotel("A1")).toHaveClass("fotel--zajety");
     await act(() => vi.advanceTimersByTimeAsync(INTERWAL_ODSWIEZANIA_MS));
@@ -86,7 +86,7 @@ describe("MapaSali: odświeżanie", () => {
 
   it("pauzuje na ukrytej karcie i wznawia po powrocie", async () => {
     vi.useFakeTimers();
-    pobierzSzczegolySeansu.mockResolvedValue({ event: {}, takenSeats: [] });
+    pobierzSzczegolySeansu.mockResolvedValue({ dane: { event: {}, takenSeats: [] }, etag: "W/\"0\"" });
     renderuj();
     act(() => ustawWidocznosc("hidden"));
     await act(() => vi.advanceTimersByTimeAsync(5 * INTERWAL_ODSWIEZANIA_MS));
@@ -103,7 +103,7 @@ describe("MapaSali: odświeżanie", () => {
     await act(() => vi.advanceTimersByTimeAsync(10 * 60_000));
     expect(pobierzSzczegolySeansu).toHaveBeenCalledTimes(4);
     const baner = screen.getByText("Nie udało się odświeżyć mapy").closest(".baner") as HTMLElement;
-    pobierzSzczegolySeansu.mockResolvedValue({ event: {}, takenSeats: [] });
+    pobierzSzczegolySeansu.mockResolvedValue({ dane: { event: {}, takenSeats: [] }, etag: "W/\"0\"" });
     fireEvent.click(within(baner).getByRole("button", { name: "Odśwież" }));
     await act(() => vi.advanceTimersByTimeAsync(1));
     expect(pobierzSzczegolySeansu).toHaveBeenCalledTimes(5);
@@ -111,7 +111,7 @@ describe("MapaSali: odświeżanie", () => {
 
   it("po odmontowaniu nie zostaje żaden timer", async () => {
     vi.useFakeTimers();
-    pobierzSzczegolySeansu.mockResolvedValue({ event: {}, takenSeats: [] });
+    pobierzSzczegolySeansu.mockResolvedValue({ dane: { event: {}, takenSeats: [] }, etag: "W/\"0\"" });
     const { unmount } = renderuj();
     await act(() => vi.advanceTimersByTimeAsync(INTERWAL_ODSWIEZANIA_MS));
     unmount();
@@ -122,5 +122,54 @@ describe("MapaSali: odświeżanie", () => {
     render(<MapaSali eventId="m" rzedy={8} miejscaWRzedzie={10} poczatkoweZajete={[]} swiezoZajety="F7" />);
     expect(screen.getByRole("alert")).toHaveTextContent("Ten fotel został właśnie zajęty");
     expect(fotel("F7")).toHaveClass("fotel--zajety");
+  });
+});
+
+describe("MapaSali: koszt odświeżania", () => {
+  // Serwer odpowiada 304: klient dostaje z powrotem TEN SAM obiekt co poprzednio.
+  function bezZmianPoPierwszym() {
+    const wersja = { dane: { event: {}, takenSeats: [] }, etag: 'W/"0"' };
+    pobierzSzczegolySeansu.mockImplementation(async (_id: string, opcje: { poprzednia?: unknown }) =>
+      opcje.poprzednia ?? wersja,
+    );
+  }
+
+  it("gdy nic się nie zmienia, odpytuje coraz rzadziej (do 30 s), a nie co 5 s", async () => {
+    vi.useFakeTimers();
+    bezZmianPoPierwszym();
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(5 * 60_000));
+    const wywolania = pobierzSzczegolySeansu.mock.calls.length;
+    // Stały interwał 5 s dałby 60 zapytań w 5 minut.
+    expect(wywolania).toBeLessThan(20);
+    expect(wywolania).toBeGreaterThanOrEqual(10);
+    // Każde kolejne zapytanie niesie ETag poprzedniej wersji (If-None-Match).
+    expect(pobierzSzczegolySeansu.mock.calls.at(-1)![1]).toMatchObject({ poprzednia: { etag: 'W/"0"' } });
+  });
+
+  it("interakcja z mapą wraca do odświeżania co 5 s", async () => {
+    vi.useFakeTimers();
+    bezZmianPoPierwszym();
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(3 * 60_000)); // interwał urósł do 30 s
+    const przed = pobierzSzczegolySeansu.mock.calls.length;
+    fireEvent.pointerEnter(document.querySelector(".sala")!);
+    await act(() => vi.advanceTimersByTimeAsync(INTERWAL_ODSWIEZANIA_MS));
+    expect(pobierzSzczegolySeansu.mock.calls.length).toBe(przed + 1);
+  });
+
+  it("po powrocie przyciskiem Wstecz (ten sam render serwera) odświeża od razu", async () => {
+    vi.useFakeTimers();
+    bezZmianPoPierwszym();
+    const mapa = () => (
+      <MapaSali eventId="wstecz" rzedy={8} miejscaWRzedzie={10} poczatkoweZajete={[]} wyrenderowano={123} />
+    );
+    const pierwszy = render(mapa());
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(pobierzSzczegolySeansu).not.toHaveBeenCalled(); // świeże dane z serwera: bez zapytania
+    pierwszy.unmount();
+    render(mapa()); // ten sam znacznik = dane z pamięci routera
+    await act(() => vi.advanceTimersByTimeAsync(100));
+    expect(pobierzSzczegolySeansu).toHaveBeenCalledTimes(1);
   });
 });

@@ -14,7 +14,8 @@ describe("GET /api/events", () => {
     const odp = await fetchWorkera("/api/events");
     expect(odp.status).toBe(200);
     expect(odp.headers.get("content-type")).toMatch(/^application\/json/);
-    expect(odp.headers.get("cache-control")).toMatch(/s-maxage=60/);
+    expect(odp.headers.get("cache-control")).toMatch(/s-maxage=5,/);
+    expect(odp.headers.get("etag")).toMatch(/^W\/"[0-9a-f]{8}-[0-9a-f]+"$/);
     const lista = (await odp.json()) as unknown[];
     expect(lista).toHaveLength(SEANSE.length);
     expect(lista[0]).toEqual({

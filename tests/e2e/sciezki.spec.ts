@@ -106,3 +106,29 @@ test("5. telefon (375 px): mapa mieści się bez przewijania poziomego", async (
   expect(rozmiar).toBeGreaterThanOrEqual(24);
   await kontekst.close();
 });
+
+test("7. repertuar od razu pokazuje mniej wolnych miejsc po rezerwacji (także po Wstecz)", async ({ page, request }) => {
+  // Ostatni seans: pozostałe testy rezerwują na pierwszym, a ich rezerwacje (TTL 5 s) wygasałyby w trakcie.
+  const seans = (await seanse(request)).at(-1);
+  const wolneNaKarcie = async () => {
+    const tekst = await page.locator(".seans", { hasText: seans!.movie }).locator(".seans__wolne span").first().textContent();
+    return Number(/wolne (\d+)/.exec(tekst ?? "")?.[1] ?? NaN);
+  };
+
+  await page.goto("/");
+  const przed = await wolneNaKarcie();
+  await page.getByRole("link", { name: new RegExp(seans!.movie) }).click();
+  const seatId = await wolnyFotel(request, seans!.id);
+  await fotel(page, seatId).click();
+  await wypelnijIRezerwuj(page);
+  await expect(page.getByRole("timer")).toBeVisible();
+
+  await page.getByRole("link", { name: /Kino Pas/ }).click();
+  await expect.poll(wolneNaKarcie).toBe(przed - 1);
+
+  // Cztery razy Wstecz: licznik → formularz → mapa → repertuar, który Next.js pokazuje
+  // z pamięci routera (stary render), więc strona musi sama się odświeżyć.
+  for (let i = 0; i < 4; i++) await page.goBack();
+  await expect(page).toHaveURL(/\/$/);
+  await expect.poll(wolneNaKarcie).toBe(przed - 1);
+});

@@ -39,7 +39,7 @@ export function wczytajKonfiguracje(env: Zmienne): Konfiguracja {
     ttlMs: liczbaCalkowita(env, "RESERVATION_TTL_SECONDS", DOMYSLNY_TTL_S, 1, 24 * 60 * 60) * 1000,
     limitAktywnychNaEmail: liczbaCalkowita(env, "MAX_ACTIVE_RESERVATIONS_PER_EMAIL", 4, 0, 80),
     okresLimituS: liczbaCalkowita(env, "RATE_LIMIT_PERIOD_SECONDS", 60, 1, 3600),
-    cacheListyMs: liczbaCalkowita(env, "EVENTS_CACHE_SECONDS", 60, 0, 3600) * 1000,
+    cacheListyMs: liczbaCalkowita(env, "EVENTS_CACHE_SECONDS", 5, 0, 3600) * 1000,
     timeoutBazyMs: liczbaCalkowita(env, "DB_TIMEOUT_MS", 3000, 50, 30_000),
     maxOdczytow: liczbaCalkowita(env, "LOAD_SHED_MAX_READS", 64, 1, 10_000),
     maxZapisow: liczbaCalkowita(env, "LOAD_SHED_MAX_WRITES", 32, 1, 10_000),
