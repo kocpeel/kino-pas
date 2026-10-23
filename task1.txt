@@ -1,0 +1,401 @@
+# Plan: kasa biletowa (Kino) na Next.js + Cloudflare
+
+## 1. Najważniejsza decyzja: wyścig o to samo miejsce
+
+Dwie osoby klikają ten sam fotel w tej samej milisekundzie. Gdybyś najpierw sprawdzał „czy wolne?", a potem zapisywał, obie zobaczą TAK (dokładnie scenariusz ze slajdu o atomowości). Rozwiązanie: **jedno warunkowe UPDATE w D1**, bez osobnego sprawdzania.
+
+- Tabela `seats`: jeden wiersz na fotel (`eventId`, `seatId`, `status`, `reservationId`, `expiresAt`, dane klienta, `code`). Przy 3 seansach × 80 foteli to tylko 240 wierszy, więc zasiewasz je z migracji/seedu.
+- **Rezerwacja**: UPDATE ustawia fotel na „reserved" tylko gdy `status = free` LUB (`reserved` i `expiresAt` minął). Wynik `changes = 1` oznacza sukces, `0` oznacza 409.
+- **Zakup**: UPDATE tylko gdy `reservationId` pasuje, `status = reserved` i `expiresAt > teraz`. Przy 0 zmian odczytujesz wiersz: jeśli już kupiony przez tę rezerwację, zwracasz **ten sam kod** (idempotencja), a jeśli wygasła, odmawiasz (410).
+- **Wygasanie jest „leniwe"**: o ważności decyduje porównanie `expiresAt` z czasem serwera przy każdym odczycie i zapisie. Cron Trigger (np. co minutę) tylko sprząta wiersze, więc poprawność nie zależy od crona, który może się spóźnić.
+- Czas ważności z zmiennej środowiskowej (`RESERVATION_TTL_SECONDS`, w testach 2 min). Zegar tylko po stronie serwera.
+
+*Alternatywa:* Durable Object na seans (jeden wątek = brak wyścigów, alarm na wygaśnięcie). Jest elegantszy, ale trudniejszy. Do tego zadania D1 wystarczy.
+
+## 2. Struktura projektu
+
+- `app/` – strony: lista seansów, mapa sali, formularz, bilet
+- `app/api/...` – cienkie route handlery: walidacja, wywołanie domeny, mapowanie błędów
+- `lib/domain/` – czysta logika (reserve, purchase, układ sali A–H × 1–10), bez zależności od Next.js, łatwa do testów
+- `lib/db/` – zapytania D1 (jedyne miejsce z SQL)
+- `lib/resilience/` – timeout, rate limit, load shedding
+- `migrations/`, `seed/`, `tests/`
+
+Next.js na Workers przez adapter OpenNext dla Cloudflare (sprawdź aktualną dokumentację, bo to szybko się zmienia).
+
+## 3. Mapowanie na pojęcia z kursu
+
+- **Idempotencja**: nagłówek `Idempotency-Key` w POST rezerwacji, więc retry nie tworzy drugiej rezerwacji. Zakup jest idempotentny przez warunek na stanie.
+- **Timeout**: `AbortSignal.timeout` na każdym fetchu klienta. Zapytania D1 krótkie, bez długich transakcji.
+- **Retry**: klient ponawia GET z backoffem i jitterem. POST tylko z kluczem idempotencji.
+- **Rate limiting**: limit na IP i e-mail dla POST rezerwacji (binding Rate Limiting lub Durable Object zamiast Redisa). Dodatkowo limit aktywnych rezerwacji na e-mail, żeby nikt nie wykupił całej sali. To moje założenie, CEO tego nie wymaga.
+- **Load shedding**: przy przeciążeniu 503 + `Retry-After`. Priorytet: zakup > rezerwacja > lista.
+- **Bulkhead**: odczyty (cache) oddzielone od ścieżki zapisu, żeby tłum oglądający mapę nie zagłodził zakupów.
+- **Fallback/degradacja**: gdy D1 zawodzi, lista seansów z cache (stale-while-revalidate), a rezerwowanie wyłączone z czytelnym komunikatem. Rezerwacja i zakup to „co musi działać".
+- **Circuit breaker, kolejki, DLQ**: w Etapie I mało uzasadnione, bo nie ma zewnętrznych zależności, a rezerwacja musi dać odpowiedź od razu. Kolejki (Cloudflare Queues + DLQ) dopiero przy mailach z potwierdzeniem.
+
+## 4. Pamięć i wycieki
+
+- **Worker**: żadnych globalnych `Map`/tablic rosnących bez limitu (izolat żyje długo). Stan trzyma baza, a cache jest ograniczony i z TTL. Żadnego `setInterval` po stronie serwera.
+- **Klient**: każdy `useEffect` z timerem lub fetchem ma cleanup (`clearInterval`, `AbortController`). Odświeżanie mapy pollingiem z backoffem, wstrzymywane gdy karta jest ukryta.
+- **Licznik 15:00**: liczony z `expiresAt` z serwera (różnica z zegarem), a nie przez dekrementowanie zmiennej, więc nie dryfuje. Po zerze komunikat „Rezerwacja wygasła, fotel wrócił do puli".
+- Brak długich połączeń (SSE/WebSocket) w tym etapie.
+
+## 5. Kontrakt i błędy
+
+Endpointy dokładnie jak w tabeli. `seatId` to tekst („F7") walidowany względem układu sali. Kody: 201 / 409 (zajęte) / 410 (wygasła) / 429 / 503. Po 409 UI odświeża mapę.
+
+## 6. Kolejność pracy i testy
+
+1. Migracje + seed → 2. domena + testy jednostkowe → 3. API → 4. UI A/B/C → 5. limity i cache → 6. cron.
+
+Kluczowe testy: 50 równoległych rezerwacji tego samego fotela daje dokładnie jedno 201. Powtórzony zakup zwraca ten sam kod. Zakup po TTL = odmowa. Po wygaśnięciu fotel można zarezerwować ponownie.
+
+============
+
+# Schemat i warunki zapytań
+
+## Tabele
+
+**`events`**: `id` (tekst), `movie`, `startsAt`, `hall`, `rowsCount` (8), `seatsPerRow` (10).
+
+**`seats`**: klucz główny (`eventId`, `seatId`), czyli jeden wiersz na fotel.
+- `status`: `free` / `reserved` / `purchased`, z ograniczeniem CHECK
+- `reservationId`, `expiresAt` (czas w ms UTC), `customerName`, `email`
+- `idempotencyKey`, `code`, `version`, `updatedAt`
+
+Seed generuje fotele z układu sali: wiersze A–H × numery 1–10, więc `seatId` = „F7". Wszystkie czasy to epoch ms z zegara Workera, a `now` liczysz raz na żądanie.
+
+## Indeksy
+
+- Unikalny na `reservationId` (tylko gdy nie jest pusty)
+- Unikalny na `code` (tylko gdy nie jest pusty)
+- Unikalny na `idempotencyKey` (tylko gdy nie jest pusty)
+- Zwykły na (`status`, `expiresAt`), dla sprzątania i zliczania zajętych
+- Zwykły na (`email`, `status`), dla limitu rezerwacji na e-mail
+
+## Rezerwacja (POST /api/reservations)
+
+Przed bazą: walidacja `seatId` względem układu sali (nieznany fotel = 400), długości imienia, formatu e-maila (znormalizowany do małych liter, bez spacji).
+
+Jedno UPDATE, które zmienia wiersz tylko gdy **wszystkie** warunki są spełnione:
+- zgadza się `eventId` i `seatId`
+- fotel jest wolny **albo** (zarezerwowany i `expiresAt` ≤ `now`)
+- liczba aktywnych rezerwacji tego e-maila jest mniejsza niż limit. To podzapytanie w tym samym UPDATE, więc jest atomowe razem z resztą.
+
+Ustawia: `status=reserved`, nowe `reservationId` (UUID z Workera), `expiresAt = now + TTL`, dane klienta, klucz idempotencji, `version + 1`.
+
+- **1 zmieniony wiersz**: zwracasz `{ reservationId, expiresAt }` (obie wartości już znasz).
+- **0 zmienionych**: dopiero teraz doczytujesz przyczynę, **tylko po to, by dobrać komunikat**: fotel zajęty = 409, limit = 429. Poprawność nie zależy od tego odczytu.
+- **Powtórka z tym samym `Idempotency-Key`**: najpierw szukasz wiersza po kluczu. Jeśli to ta sama rezerwacja (ten sam fotel i e-mail) i nadal ważna, zwracasz **to samo** `{ reservationId, expiresAt }`. Jeśli klucz użyty z innymi danymi, to 422.
+
+## Zakup (POST /api/reservations/:id/purchase)
+
+Kod biletu generujesz przed zapytaniem (losowy, krótki). UPDATE działa gdy: `reservationId` pasuje **i** `status=reserved` **i** `expiresAt > now`. Ustawia `status=purchased`, `code`, czyści `expiresAt`, `version + 1`.
+
+- **1 zmieniony wiersz**: zwracasz `{ code }`.
+- **0 zmienionych**: odczyt po `reservationId`:
+  - `purchased` → zwracasz **zapisany** kod (retry, albo dwa równoległe kliknięcia; twój świeżo wygenerowany kod jest wtedy odrzucany)
+  - brak wiersza lub wygasła → 410 z komunikatem o wygaśnięciu
+
+Uwaga: po wygaśnięciu i ponownej rezerwacji wiersz dostaje nowe `reservationId`, więc stary identyfikator „znika". Nie rozróżniasz „wygasła" od „nigdy nie istniała", więc oba przypadki to odmowa z tym samym komunikatem. Jeśli chcesz je rozróżniać, potrzebna byłaby osobna tabela historii rezerwacji. Na Etap I raczej zbędne.
+
+## Odczyty
+
+- **Lista wydarzeń**: wydarzenia + liczba wolnych foteli. „Zajęty" = `purchased` **lub** (`reserved` i `expiresAt > now`). Cache na krawędzi ok. minuty.
+- **Szczegóły**: `{ event, takenSeats }`, gdzie `takenSeats` to **same `seatId`**. Nigdy imię ani e-mail innych klientów. Cache 1–2 s albo wcale. Nieaktualna mapa nie szkodzi, bo ostatnie słowo ma zapis (409).
+
+## Sprzątanie (Cron)
+
+UPDATE: wiersze `reserved` z `expiresAt ≤ now` wracają do `free`, a `reservationId`, imię, e-mail i klucz idempotencji są czyszczone. Przy okazji nie trzymasz niepotrzebnych danych osobowych. To tylko optymalizacja, bo lenie wygasanie z punktu 1 działa bez niego.
+
+## Rzeczy do świadomej decyzji
+
+- Zapytania zawsze z parametrami (bez sklejania SQL), a liczbę zmienionych wierszy bierzesz z wyniku D1 (`meta.changes`).
+- Wersja (`version`) tu służy głównie do diagnostyki. Kluczowe są warunki na stanie, a nie ETag, bo klient nie edytuje zasobu.
+- Limit rezerwacji na e-mail to moje założenie spoza treści zadania. Możesz go wyłączyć, usuwając jeden warunek.
+
+===========
+
+# Layout i oprawa UI: kasa biletowa (Kino)
+
+## 1. Ogólny styl
+
+- **Klimat**: ciemny, „kinowy" motyw jako domyślny (granat/grafit, jeden akcent, np. bursztynowy). Kolory trzymasz jako tokeny (zmienne CSS), więc zmiana motywu to jedno miejsce.
+- **Typografia**: jeden krój przez `next/font` (self-hosted, bez skoku layoutu). Licznik i kod biletu cyframi o stałej szerokości (`tabular-nums`, monospace).
+- **Zero obrazków zewnętrznych**: plakaty zastępujesz kolorowym blokiem z inicjałem filmu, a ikony to SVG inline. Mniej requestów, brak problemów z CSP.
+- **Szkielet strony**: nagłówek (nazwa kasy + krokowy pasek „Seans → Fotel → Rezerwacja → Bilet"), treść w kontenerze do ok. 960 px, minimalna stopka. Nad treścią miejsce na **baner statusu** (offline, tryb awaryjny, przeciążenie).
+
+## 2. Ekrany i adresy
+
+Adresy to moja propozycja. Ostateczne ustala lider w kontrakcie wewnętrznym.
+
+| Ekran | Adres | Karta |
+|---|---|---|
+| Repertuar | `/` | A |
+| Sala i mapa foteli | `/seans/[eventId]` | A |
+| Formularz rezerwacji | `/seans/[eventId]/miejsce/[seatId]` | B |
+| Licznik + „Kupuję bilet" | `/rezerwacja/[reservationId]` | B/C |
+| Bilet | `/bilet/[reservationId]` | C |
+
+### A1. Repertuar
+Lista 3 kart seansów: film, data, godzina, sala, pasek „wolne X z 80" i przycisk **„Wybierz miejsce"**. Cała karta jest klikalna. Na desktopie 3 karty w rzędzie lub siatce, na telefonie jedna pod drugą.
+
+### A2. Mapa sali
+```
+ Film · pt 24.10 · 19:30 · Sala 1
+        ┌──── EKRAN ────┐
+ A  ○ ○ ○ ● ● ○ ○ ○ ○ ○  A
+ B  ○ ○ ○ ○ ○ ○ ● ○ ○ ○  B
+ …  (rzędy A–H, fotele 1–10)
+ ○ wolny   ● zajęty   ◉ wybrany
+```
+- Ekran jako wygięty pasek na górze. Rzędy A–H z etykietami po obu stronach, nad fotelami numery 1–10.
+- Fotel to przycisk z numerem w środku, a zajęty jest wyszarzony i nieklikalny. Stan nie opiera się **tylko** na kolorze: zajęty ma też inny kształt/przekreślenie.
+- Dotknięcie wolnego fotela przenosi do formularza. **Samo kliknięcie niczego nie rezerwuje**, więc pomyłka nic nie kosztuje.
+- Na telefonie fotel ok. 30 px z odstępem 4 px (mieści się 10 w rzędzie bez przewijania). Na desktopie do 44 px.
+- Pod mapą: legenda i małe „Zaktualizowano X s temu".
+- Gdy po powrocie z 409 fotel okazał się zajęty, mapa pokazuje komunikat „Ten fotel został właśnie zajęty" i już go szarzeje.
+
+### B. Formularz rezerwacji
+Karta z nagłówkiem **„Rząd F, miejsce 7"**, pod nim film, sala, data. Pola: **Imię** i **E-mail** (poprawne `autocomplete`, `type="email"`). Przycisk **„Zarezerwuj fotel"**.
+- Tekst pomocniczy nie wpisuje na sztywno „15 minut", bo w testach TTL wynosi 2 minuty. Prawdziwy czas pokazuje dopiero licznik po rezerwacji.
+- Walidacja inline (po opuszczeniu pola i przy wysłaniu), błędy czytane przez czytnik ekranu.
+- Podczas wysyłania przycisk jest zablokowany ze spinnerem (brak podwójnego kliknięcia).
+
+### B/C. Licznik i zakup
+Karta z dużym napisem **„Trzymamy Twój fotel jeszcze 14:32"**, pod nim cienki pasek postępu, podsumowanie (film, sala, rząd, miejsce, imię, e-mail) i główny przycisk **„Kupuję bilet"**.
+- Poniżej minuty licznik zmienia kolor na ostrzegawczy.
+- Po zerze karta przełącza się na stan: **„Rezerwacja wygasła, fotel wrócił do puli"** i przycisk „Wybierz inny fotel". Ten sam stan pokazujesz, gdy serwer odpowie 410, bo to on decyduje.
+
+### C. Bilet
+Karta w kształcie biletu (wcięcia i linia perforacji zrobione CSS): film, sala, rząd, miejsce i **kod** dużą czcionką. Przyciski: „Kopiuj kod", „Drukuj" (osobne style do druku) i „Wróć do repertuaru". Mała notka: płatność dojdzie w kolejnym etapie. Kod QR pomijasz, bo wymaga biblioteki, a zadanie wymaga tylko kodu.
+
+## 3. Stany wspólne dla wszystkich ekranów
+
+- **Ładowanie**: szkielety (skeleton) o wymiarach docelowych, bez skoków layoutu.
+- **Błędy** (komunikat po ludzku + przycisk akcji): 409 zajęte → „Wróć do mapy"; 429 → informacja o limicie i odczekaniu (z `Retry-After`); 503 → „System jest przeciążony, spróbuj za chwilę" + „Spróbuj ponownie"; timeout/sieć → ponowienie z tym samym kluczem idempotencji.
+- **Tryb awaryjny**: lista seansów z cache, baner „Pokazujemy dane sprzed chwili", a rezerwowanie wyłączone z wyjaśnieniem.
+- **Nie znaleziono** (`not-found`) dla złego seansu/fotela i **granica błędu** (`error.tsx`) z przyciskiem ponowienia.
+
+## 4. Dostępność
+
+- Fotele to `<button>` z etykietą „Rząd F, miejsce 7, wolne". Nawigacja strzałkami po siatce (roving tabindex), żeby nie było 80 przystanków Tab.
+- Licznik z `role="timer"`, ale bez ogłaszania co sekundę. Osobny, niewidoczny region `aria-live="polite"` zapowiada tylko progi (np. 1 minuta, wygaśnięcie).
+- Wyraźny focus, kontrast co najmniej AA, `lang="pl"`, szanowanie `prefers-reduced-motion` (animacje zmiany stanu foteli wyłączone).
+
+## 5. Podział na komponenty (pod wydajność i brak wycieków)
+
+- **Serwerowe**: szkielet, karty repertuaru, układ strony, dane statyczne sali. Zero JS dla tych części.
+- **Klienckie (tylko to, co musi)**: `SeatMap`, `ReservationForm`, `Countdown`, `TicketActions`.
+- `Seat` zapamiętany (`memo`) i dostaje tylko „zajęty / wolny", więc odświeżenie zmienia tylko te fotele, które się zmieniły. `takenSeats` trzymasz jako zestaw, który **podmieniasz**, a nie rozszerzasz.
+- Hook `usePolling`: `AbortController`, pauza przy ukrytej karcie, backoff przy błędach i **zatrzymanie po kilku porażkach** z przyciskiem „Odśwież".
+- Hook `useCountdown(expiresAt)`: różnica względem zegara, przeliczana też po powrocie na kartę. Jeden timer ze sprzątaniem w `useEffect`.
+- Powiadomienia (toasty) znikają same i nie kumulują się.
+
+## 6. Dane między ekranami
+
+W kontrakcie nie ma GET rezerwacji, więc `eventId`, `seatId` i `reservationId` niesiesz w adresie. `expiresAt` i kod trzymasz w `sessionStorage` (z `try/catch`, bo bywa niedostępny). Po odświeżeniu strony bez tych danych odtwarzasz bilet idempotentnym POST zakupu (zwróci ten sam kod). To czysto wyświetlanie: **prawdą jest zawsze odpowiedź serwera**, więc podmieniony adres niczego nie psuje.
+
+==========
+
+
+# Struktura plików projektu
+
+Nazwy modułów domenowych są po polsku. Pola kontraktu API (`eventId`, `seatId`, `reservationId`…) zostają po angielsku, bo tak wymaga wspólny kontrakt.
+
+```
+kasa-kino/
+├─ wrangler.jsonc        # bindingi: D1, rate limit, TTL (vars)
+├─ open-next.config.ts   # adapter Next → Cloudflare Workers
+├─ next.config.ts
+├─ cloudflare-env.d.ts   # typy bindingów (generowane)
+├─ .dev.vars             # lokalne zmienne, poza gitem
+├─ package.json
+├─ tsconfig.json
+│
+├─ migrations/
+│  └─ 0001_schemat.sql   # events, seats, indeksy, CHECK
+├─ seed/
+│  └─ generuj-seed.ts    # 3 seanse, 2 sale, 8×10 foteli
+│
+├─ src/
+│  ├─ app/
+│  │  ├─ layout.tsx
+│  │  ├─ globals.css
+│  │  ├─ error.tsx
+│  │  ├─ not-found.tsx
+│  │  ├─ page.tsx                    # A1 repertuar
+│  │  ├─ seans/[eventId]/
+│  │  │  ├─ page.tsx                 # A2 mapa sali
+│  │  │  ├─ loading.tsx
+│  │  │  └─ miejsce/[seatId]/
+│  │  │     └─ page.tsx              # B formularz
+│  │  ├─ rezerwacja/[reservationId]/
+│  │  │  └─ page.tsx                 # licznik + zakup
+│  │  ├─ bilet/[reservationId]/
+│  │  │  └─ page.tsx                 # C bilet
+│  │  └─ api/
+│  │     ├─ events/route.ts          # GET lista
+│  │     ├─ events/[id]/route.ts     # GET szczegóły
+│  │     └─ reservations/
+│  │        ├─ route.ts              # POST rezerwacja
+│  │        └─ [id]/purchase/
+│  │           └─ route.ts           # POST zakup
+│  │
+│  ├─ components/
+│  │  ├─ ui/             # Przycisk, Pole, Karta, Szkielet, Baner
+│  │  ├─ repertuar/      # KartaSeansu (serwerowy)
+│  │  ├─ sala/           # MapaSali (klient), Fotel, Legenda
+│  │  ├─ rezerwacja/     # FormularzRezerwacji, Licznik
+│  │  └─ bilet/          # Bilet, AkcjeBiletu
+│  │
+│  ├─ hooks/
+│  │  ├─ usePolling.ts   # abort, pauza, backoff, limit porażek
+│  │  └─ useCountdown.ts # liczony z expiresAt, ze sprzątaniem
+│  │
+│  ├─ lib/
+│  │  ├─ domain/                 # czysta logika, bez Next i D1
+│  │  │  ├─ uklad-sali.ts        # rzędy A–H, walidacja seatId
+│  │  │  ├─ rezerwacja.ts        # reguły rezerwacji i zakupu
+│  │  │  ├─ bledy.ts             # błędy domenowe → kody HTTP
+│  │  │  └─ typy.ts
+│  │  ├─ db/
+│  │  │  ├─ polaczenie.ts        # jedyne miejsce z bindingiem D1
+│  │  │  ├─ zapytania-seanse.ts  # odczyty
+│  │  │  └─ zapytania-miejsca.ts # warunkowe UPDATE-y
+│  │  ├─ http/
+│  │  │  ├─ obsluga-trasy.ts     # wrapper: walidacja, błędy, nagłówki
+│  │  │  ├─ walidacja.ts         # schematy wejścia
+│  │  │  └─ odpowiedzi.ts        # 201/409/410/429/503, Retry-After
+│  │  ├─ resilience/
+│  │  │  ├─ limit-zapytan.ts     # rate limiting (IP, e-mail)
+│  │  │  ├─ przeciazenie.ts      # load shedding, priorytety
+│  │  │  └─ timeout.ts
+│  │  ├─ klient/
+│  │  │  ├─ api.ts               # fetch: timeout, retry GET, klucz idempotencji
+│  │  │  └─ sesja.ts             # sessionStorage z try/catch
+│  │  ├─ config.ts               # TTL i limity z env
+│  │  └─ czas.ts                 # jedyne źródło „teraz"
+│  │
+│  └─ styles/
+│     └─ tokens.css             # kolory, odstępy, typografia
+│
+├─ workers/
+│  └─ sprzatanie/               # osobny mały Worker z Cronem
+│     ├─ wrangler.jsonc         # ta sama baza D1, harmonogram
+│     └─ src/index.ts           # zwalnia wygasłe rezerwacje
+│
+├─ tests/
+│  ├─ jednostkowe/              # domena, układ sali
+│  ├─ integracyjne/             # D1 + route handlery, współbieżność
+│  └─ e2e/                      # przejście A → B → C
+│
+└─ docs/
+   ├─ kontrakt-api.md           # endpointy i kody błędów
+   └─ decyzje.md                # dlaczego D1, TTL, limity
+```
+
+## Zasady, które trzymają to w ryzach
+
+1. **Kierunek zależności jest jednokierunkowy**: `app/api` → `lib/http` → `lib/domain` → `lib/db`. Domena nie importuje niczego z Next.js ani Cloudflare, więc testujesz ją bez środowiska.
+2. **Binding D1 tylko w `polaczenie.ts`**. Reszta dostaje obiekt bazy jako argument, więc w testach podmieniasz go bez grzebania w kodzie.
+3. **Żadnego stanu w zasięgu modułu**: nie trzymasz w plikach rosnących map ani tablic (izolat Workera żyje długo, to klasyczne źródło wycieków). Stan jest w bazie, a ewentualny cache ma limit i TTL.
+4. **`'use client'` tylko w liściach**: `MapaSali`, `FormularzRezerwacji`, `Licznik`, `AkcjeBiletu`. Strony i karty zostają serwerowe, więc wysyłasz mało JS.
+5. **Czas wyłącznie przez `czas.ts`**, a TTL tylko przez `config.ts`. Dzięki temu w testach możesz „przewinąć" zegar i skrócić czas ważności do 2 minut.
+6. **Cienkie route handlery**: każdy robi tylko „wrapper → walidacja → funkcja domenowa → odpowiedź". Całe mapowanie błędów na 409/410/429/503 jest w jednym miejscu (`bledy.ts` + `odpowiedzi.ts`).
+
+## Dwie uwagi techniczne
+
+- **Cron w osobnym Workerze** wybieram, bo jest prostszy niż rozszerzanie workera generowanego przez adapter OpenNext (ten domyślnie obsługuje tylko żądania HTTP). Oba podłączasz do tej samej bazy D1 w `wrangler.jsonc`. Sprawdź w aktualnej dokumentacji, czy twoja wersja adaptera nie ma wygodniejszej opcji.
+- **Testy integracyjne** z prawdziwym D1 najlepiej uruchamiać w środowisku Workerów (pakiet `@cloudflare/vitest-pool-workers`). Zweryfikuj aktualną konfigurację, bo ten obszar szybko się zmienia. Tylko tam sprawdzisz test „50 równoległych rezerwacji = jedno 201" na prawdziwej bazie, a nie na mocku.
+
+========
+
+
+# Plan testów
+
+## Zasady wspólne
+
+- **Piramida**: dużo testów jednostkowych domeny, średnio integracyjnych na prawdziwym D1 w środowisku Workerów (`@cloudflare/vitest-pool-workers`), mało e2e w przeglądarce (Playwright). Zweryfikuj aktualną konfigurację, bo to szybko się zmienia.
+- **Zegar**: cała logika bierze „teraz" z `czas.ts`, więc w testach go podmieniasz i „przewijasz" bez czekania. Wyjątek to e2e, gdzie zegara serwera nie podmienisz, więc używasz osobnego środowiska z TTL rzędu 5 s.
+- **Izolacja**: każdy test zaczyna od świeżego seedu (3 seanse × 80 foteli), bez zależności od kolejności.
+- **Kontrakt**: asercje na dokładne kształty z tabeli zadania (`{ reservationId, expiresAt }`, `{ code }`, `{ event, takenSeats }`).
+
+## 1. Jednostkowe (domena, bez bazy)
+
+- Układ sali: `A1`, `H10` poprawne. `I1`, `A0`, `A11`, `F`, pusty tekst, `f7` (małe litery) odrzucone zgodnie z regułą walidacji.
+- Normalizacja e-maila i imienia (spacje, wielkość liter, za długie wartości).
+- Mapowanie błędów domenowych na kody: zajęte → 409, wygasła → 410, limit → 429, zły fotel → 400.
+
+## 2. Współbieżność (integracyjne)
+
+| ID | Scenariusz | Oczekiwanie |
+|---|---|---|
+| W1 | 50 równoległych rezerwacji tego samego fotela (różne e-maile) | dokładnie jedno 201, reszta 409 |
+| W2 | 50 równoległych rezerwacji różnych foteli | wszystkie 201, brak zgubionych |
+| W3 | Dwa równoległe zakupy tej samej rezerwacji | oba zwracają **ten sam** kod, w bazie jeden zakup |
+| W4 | Zakup równolegle z wygaśnięciem (zegar na granicy `expiresAt`) | wynik zawsze spójny: albo kod, albo 410, nigdy oba |
+| W5 | Rezerwacja wygasłego fotela przez dwie osoby naraz | jedna wygrywa, druga 409 |
+| W6 | Limit rezerwacji na e-mail: N+10 równoległych żądań z jednego e-maila | w bazie nie więcej niż limit aktywnych |
+
+Uczciwie: lokalny D1 serializuje zapisy, więc te testy dowodzą poprawności **warunków w zapytaniach**, a nie zachowania pod prawdziwym opóźnieniem sieci. Dlatego dodaj jeszcze skrypt obciążeniowy (np. k6) uruchamiany na środowisku testowym w Cloudflare z W1 jako kryterium zaliczenia.
+
+## 3. Wygasanie
+
+- Rezerwacja ważna do `expiresAt − 1 ms`, po `expiresAt` wygasła (sprawdź obie strony granicy).
+- Zakup po wygaśnięciu → 410 z komunikatem o powrocie fotela do puli.
+- Po wygaśnięciu `takenSeats` **nie** zawiera fotela (bez czekania na cron).
+- Po wygaśnięciu fotel można zarezerwować ponownie, a stary `reservationId` nie kupi nowej rezerwacji.
+- Cron: zwalnia tylko wygasłe, nie rusza ważnych ani kupionych, czyści dane osobowe. Powtórne uruchomienie nic nie psuje.
+- TTL z zmiennej środowiskowej: wartość 2 min oraz brak/niepoprawna wartość (zachowanie domyślne lub czytelny błąd startu).
+
+## 4. Idempotencja
+
+- Ten sam `Idempotency-Key` + te same dane: dwa razy POST rezerwacji zwraca te same `reservationId` i `expiresAt`, w bazie jedna rezerwacja.
+- Ten sam klucz + inne dane → 422.
+- Powtórka po wygaśnięciu pierwszej rezerwacji: zdefiniuj i przetestuj wybrane zachowanie (rekomenduję traktować jako nowe żądanie).
+- Powtórzony zakup po sukcesie: ten sam kod, status 200 lub 201 (zdecyduj raz i trzymaj się tego).
+- Retry po symulowanym timeoucie klienta: odpowiedź nie dubluje rezerwacji.
+
+## 5. Odporność
+
+- **Rate limit**: przekroczenie → 429 z `Retry-After`. Po oknie znowu działa. Limit jednego klienta nie blokuje innych.
+- **Load shedding**: przy symulowanym przeciążeniu 503 + `Retry-After`. Zakup nadal przechodzi, gdy lista i rezerwacje są odrzucane (priorytety).
+- **Awaria bazy** (podmieniony błędny adapter): lista seansów z cache z oznaczeniem „dane sprzed chwili", rezerwacja daje 503, a nie 500 ani wiszące żądanie.
+- **Timeout**: wolna odpowiedź przerwana po limicie, a UI pokazuje błąd i pozwala ponowić.
+- **Błędne wejście**: złe JSON-y, brakujące pola, nieistniejący `eventId`, zbyt duże body → kontrolowane 4xx, nigdy 500.
+- **Prywatność**: odpowiedzi odczytu nie zawierają imion ani e-maili innych klientów.
+
+## 6. Testy UI
+
+**Komponentowe (Testing Library):**
+- `Fotel`: zajęty nieklikalny, wolny wywołuje wybór. Etykieta dostępności zawiera rząd, numer i stan.
+- `MapaSali`: nawigacja strzałkami, jeden fotel w tab-order.
+- `FormularzRezerwacji`: walidacja inline, blokada przycisku w trakcie wysyłania (podwójne kliknięcie = jedno żądanie), obsługa 409/429/503.
+- `Licznik`: poprawny format `mm:ss`, zmiana stylu poniżej minuty, przełączenie na „wygasła" po zerze, poprawne działanie po „powrocie na kartę" (przeskok zegara).
+
+**E2E (Playwright, TTL ~5 s):**
+1. Pełna ścieżka: seans → fotel → formularz → licznik → „Kupuję bilet" → bilet z kodem, filmem, salą, rzędem i miejscem.
+2. Wygaśnięcie: po TTL komunikat „Rezerwacja wygasła, fotel wrócił do puli", a mapa znów pokazuje fotel jako wolny.
+3. Dwie sesje przeglądarki wybierają ten sam fotel: druga dostaje komunikat o zajęciu i odświeżoną mapę.
+4. Odświeżenie strony licznika i biletu: nic nie wybucha, kod ten sam.
+5. Telefon (viewport ~375 px): mapa mieści się bez przewijania poziomego.
+6. Dostępność: skan `axe` na każdym ekranie, obsługa samą klawiaturą, `prefers-reduced-motion`.
+
+## 7. Wycieki i wydajność
+
+- **Klient**: po odmontowaniu komponentów liczba aktywnych timerów wraca do zera (fake timers), a `AbortController` anuluje fetch. `usePolling` zatrzymuje się po N porażkach i przy ukrytej karcie.
+- **Worker**: test statyczny (reguła lintera lub skrypt w CI) wykrywający zmienne `Map`/tablice/`setInterval` na poziomie modułu. Test „soak": kilka tysięcy żądań pod rząd w środowisku testowym i sprawdzenie, że czasy odpowiedzi i zużycie pamięci się nie pogarszają. To rozsądne przybliżenie, nie twardy dowód.
+- **Wydajność**: budżet wielkości JS dla strony mapy, zapytania odczytu bez pełnych skanów (sprawdź plan zapytania pod indeksy), p95 rezerwacji pod obciążeniem.
+
+## 8. Kolejność i kryteria zaliczenia
+
+1. Jednostkowe + W1/W3 + idempotencja (rdzeń poprawności)
+2. Wygasanie + kontrakt API
+3. Odporność
+4. Komponenty UI, potem e2e
+5. Obciążenie i soak
+
+**Bramka przed oddaniem**: W1–W6 i wszystkie testy wygasania zielone, 0 błędów 500 w testach odporności, e2e ścieżka główna i wygaśnięcie zielone, brak naruszeń `axe`.
+
