@@ -56,7 +56,10 @@ npm run cron:dev
 
 Jednorazowo:
 
-1. Zaloguj Wranglera (`npx wrangler login`) albo ustaw `CLOUDFLARE_API_TOKEN` i `CLOUDFLARE_ACCOUNT_ID`.
+1. Dane dostępowe: skopiuj `.env.cloudflare.example` do `.env.cloudflare` (poza gitem) i wpisz `CLOUDFLARE_API_TOKEN`
+   oraz `CLOUDFLARE_ACCOUNT_ID`. Skrypty zdalne (`deploy`, `cron:deploy`, `db:*:remote`, `cf:whoami`) czytają go przez
+   `scripts/cloudflare.mjs`. Bez tego pliku działa `npx wrangler login`. Nie wpisuj tokena do `.env`: Next.js/OpenNext
+   wczytują ten plik do aplikacji.
 2. Utwórz bazę: `npx wrangler d1 create kasa-kino-db` (albo w dashboardzie) i wpisz jej `database_id`
    w **obu** plikach: `wrangler.jsonc` i `workers/sprzatanie/wrangler.jsonc`.
 3. Schemat i dane:
