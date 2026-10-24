@@ -22,7 +22,8 @@ npm run dev
 
 Aplikacja: http://localhost:3000. `next dev` dostaje bindingi (D1, rate limit, vars) z `wrangler.jsonc`
 przez `initOpenNextCloudflareForDev`. Lokalna baza leży w `.wrangler/state`.
-`next dev` nie uruchamia `worker.ts`, więc mapa działa tam na odpytywaniu. Kanał na żywo (WebSocket) działa w `npm run preview`.
+`npm run dev` uruchamia dwa procesy: `next dev` i Worker sali (`workers/sala-dev`, port 8789) z Durable Objectem,
+więc mapa na żywo (WebSocket) działa także lokalnie. Same `npm run dev:next` startuje tylko Next.js (mapa wtedy odpytuje).
 Krótszy TTL do ręcznych testów: skopiuj `.dev.vars.example` do `.dev.vars` (TTL 120 s).
 
 Podgląd zbudowanego Workera w prawdziwym runtime (workerd):
@@ -44,8 +45,8 @@ npm run cron:dev
 | `npm run test:unit` | domena, układ sali, walidacja, mapowanie błędów, odporność, statyczny test wycieków | Node |
 | `npm run test:int` | W1–W6 (współbieżność), wygasanie, idempotencja, odporność, kontrakt, Cron, kanał na żywo (Durable Object + WebSocket) | workerd + prawdziwy D1 (`@cloudflare/vitest-plugin`) |
 | `npm run test:ui` | komponenty: Fotel, MapaSali, Formularz, Licznik, hooki (timery po odmontowaniu) | jsdom + Testing Library |
-| `npm run test:e2e` | ścieżka A → B → C, wygaśnięcie (TTL 5 s), dwie sesje, odświeżanie, telefon, axe, klawiatura, repertuar po „Wstecz" | Playwright + `next dev` (środowisko `e2e`) |
-| `npm run test:e2e:push` | mapa na żywo: zmiana dociera do drugiej przeglądarki bez odpytywania | Playwright + zbudowana aplikacja w workerd |
+| `npm run test:e2e` | ścieżka A → B → C, wygaśnięcie (TTL 5 s), dwie sesje, odświeżanie, telefon, axe, klawiatura, repertuar po „Wstecz", mapa na żywo | Playwright + `npm run dev` (środowisko `e2e`) |
+| `npm run test:e2e:push` | mapa na żywo na buildzie produkcyjnym: zmiana dociera do drugiej przeglądarki bez odpytywania | Playwright + zbudowana aplikacja w workerd |
 | `npm run test:obciazenie` | W1 pod prawdziwym opóźnieniem (k6) na środowisku w Cloudflare | k6 |
 | `npm run typecheck`, `npm run lint:wycieki` | TypeScript, stan na poziomie modułu | Node |
 
@@ -95,5 +96,7 @@ src/lib/push/                 Durable Object sali, trasa WebSocket, protokół k
 worker.ts                     własny Worker: OpenNext + /api/events/:id/live + eksport Durable Objectu
 src/lib/klient/               fetch z timeoutem/retry/idempotencją, sessionStorage
 workers/sprzatanie/           Worker z Cronem (ta sama baza D1)
+workers/sala-dev/             Worker sali tylko do `npm run dev` (nie wdrażany)
+scripts/dev.mjs               `npm run dev`: Next.js + Worker sali obok siebie
 tests/                        jednostkowe/, integracyjne/, ui/, e2e/, e2e-push/, obciazenie/
 ```

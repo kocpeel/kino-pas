@@ -12,6 +12,7 @@ import { Kroki } from "@/components/uklad/Kroki";
 import { zegarSystemowy } from "@/lib/czas";
 import { czyPoprawneMiejsce } from "@/lib/domain/uklad-sali";
 import { formatujTermin } from "@/lib/format";
+import { adresKanaluNaZywo } from "@/lib/push/tryb-dev";
 import { parametr, wczytajSeans } from "@/lib/strony";
 
 export const dynamic = "force-dynamic";
@@ -72,8 +73,7 @@ export default async function StronaSali({ params, searchParams }: Props) {
               poczatkoweZajete={stan.dane.takenSeats}
               swiezoZajety={swiezoZajety}
               wyrenderowano={zegarSystemowy.teraz()}
-              // `next dev` nie uruchamia worker.ts (kanał WebSocket); tam mapa działa na odpytywaniu.
-              kanalNaZywo={process.env.NODE_ENV !== "development"}
+              adresKanalu={adresKanaluNaZywo(stan.dane.event.id)}
             />
           </Karta>
         </>

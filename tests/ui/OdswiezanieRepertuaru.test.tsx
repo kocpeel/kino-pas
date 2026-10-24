@@ -19,8 +19,16 @@ describe("OdswiezanieRepertuaru", () => {
     const pierwszy = render(<OdswiezanieRepertuaru wyrenderowano={1000} />);
     expect(router.refresh).not.toHaveBeenCalled();
     pierwszy.unmount();
+    act(() => vi.advanceTimersByTime(800)); // użytkownik był na innej stronie
     render(<OdswiezanieRepertuaru wyrenderowano={1000} />);
     expect(router.refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("natychmiastowy ponowny montaż (StrictMode w dev) nie jest powrotem", () => {
+    const pierwszy = render(<OdswiezanieRepertuaru wyrenderowano={1500} />);
+    pierwszy.unmount();
+    render(<OdswiezanieRepertuaru wyrenderowano={1500} />);
+    expect(router.refresh).not.toHaveBeenCalled();
   });
 
   it("nowy render po odświeżeniu nie wywołuje kolejnego (brak pętli)", () => {

@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { zegarSystemowy } from "../../src/lib/czas";
 import { zaleznosciZBindingow, type Bindingi } from "../../src/lib/db/polaczenie";
 import { obsluzRezerwacje } from "../../src/lib/http/trasy";
+import { polaczZSala } from "../../src/lib/push/polaczenie-na-zywo";
 import type { WiadomoscStanu } from "../../src/lib/push/protokol";
 import { INNY_SEANS, SEANS, zadanieRezerwacji, zasiej } from "./pomocnicze";
 
@@ -90,6 +91,28 @@ describe("połączenie", () => {
     const odp = await exports.default.fetch(zadanie);
     expect(odp.status).toBe(status);
     expect(odp.webSocket).toBeNull();
+  });
+});
+
+describe("dozwolone źródła (npm run dev: strona na innym porcie niż Worker sali)", () => {
+  const zDev = (zrodlo: string, dozwolone: string[]) =>
+    polaczZSala(
+      new Request(`http://localhost:8789/api/events/${SEANS}/live`, { headers: { Upgrade: "websocket", Origin: zrodlo } }),
+      env.SALE,
+      SEANS,
+      { dozwoloneZrodla: dozwolone },
+    );
+
+  it("strona z listy dozwolonych może się połączyć", async () => {
+    const odp = await zDev("http://localhost:3000", ["http://localhost:3000"]);
+    expect(odp.status).toBe(101);
+    odp.webSocket!.accept();
+    odp.webSocket!.close(1000);
+  });
+
+  it("inny port lub host spoza listy → 403", async () => {
+    expect((await zDev("http://localhost:4000", ["http://localhost:3000"])).status).toBe(403);
+    expect((await zDev("http://localhost:3000", [])).status).toBe(403);
   });
 });
 

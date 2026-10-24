@@ -7,6 +7,7 @@ import { wczytajKonfiguracje } from "../config";
 import type { SeansNaLiscie, SzczegolySeansu } from "../domain/typy";
 import { CacheZLimitem } from "../resilience/cache";
 import type { SalaSeansu } from "../push/sala-seansu";
+import { adresSaliDev, czyNextDev } from "../push/tryb-dev";
 import type { Limiter } from "../resilience/limit-zapytan";
 import { straznikDlaIzolatu } from "../resilience/przeciazenie";
 import type { CacheKrawedzi, CacheOdczytow, Zaleznosci } from "../zaleznosci";
@@ -74,6 +75,20 @@ function powiadamiaczSal(
   };
 }
 
+/** W `npm run dev` sala żyje w osobnym Workerze (workers/sala-dev): powiadamiamy go przez HTTP. */
+function powiadamiaczSaliDev(
+  adres: string | null,
+  wTle: ((obietnica: Promise<unknown>) => void) | undefined,
+): ((eventId: string) => void) | undefined {
+  if (!adres) return undefined;
+  return (eventId) => {
+    const praca = fetch(`${adres}/__dev/zmiana/${encodeURIComponent(eventId)}`, { method: "POST" }).catch((blad: unknown) => {
+      console.warn("Worker sali (dev) nie odpowiada", blad);
+    });
+    wTle?.(praca);
+  };
+}
+
 export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {}): Zaleznosci {
   const konfiguracja = wczytajKonfiguracje(env);
   return {
@@ -85,7 +100,9 @@ export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {})
     cache: opcje.cache ?? cacheIzolatu(),
     cacheKrawedzi: cacheKrawedziJesliJest(),
     wTle: opcje.wTle,
-    // W `next dev` klasy Durable Objectu nie ma (żyje w worker.ts), więc nie ma kogo powiadamiać.
-    powiadomSale: process.env.NODE_ENV === "development" ? undefined : powiadamiaczSal(env.SALE, opcje.wTle),
+    // W `next dev` klasy Durable Objectu tu nie ma (żyje w worker.ts), więc sala jest w Workerze dev.
+    powiadomSale: czyNextDev()
+      ? powiadamiaczSaliDev(adresSaliDev(), opcje.wTle)
+      : powiadamiaczSal(env.SALE, opcje.wTle),
   };
 }

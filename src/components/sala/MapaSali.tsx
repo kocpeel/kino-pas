@@ -6,10 +6,10 @@
 // Kliknięcie wolnego fotela tylko przenosi do formularza: samo w sobie niczego nie rezerwuje.
 
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useCallback, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useNaZywo } from "@/hooks/useNaZywo";
 import { usePolling } from "@/hooks/usePolling";
-import { czyPrzywroconyRender } from "@/hooks/usePrzywroconyRender";
+import { usePoPrzywroceniu } from "@/hooks/usePrzywroconyRender";
 import { Baner } from "@/components/ui/Baner";
 import { Przycisk } from "@/components/ui/Przycisk";
 import { rzedySali } from "@/lib/domain/uklad-sali";
@@ -34,8 +34,11 @@ interface Props {
   swiezoZajety?: string | null;
   /** Znacznik renderu serwera: ten sam przy ponownym montażu = dane z pamięci routera („Wstecz"). */
   wyrenderowano?: number;
-  /** false = bez kanału na żywo (np. `next dev`, który nie uruchamia worker.ts); zostaje odpytywanie. */
-  kanalNaZywo?: boolean;
+  /**
+   * Adres kanału na żywo (WebSocket). Domyślnie ścieżka na tej samej domenie; w `npm run dev`
+   * adres Workera sali; null = bez kanału (zostaje odpytywanie).
+   */
+  adresKanalu?: string | null;
 }
 
 export function MapaSali({
@@ -45,7 +48,7 @@ export function MapaSali({
   poczatkoweZajete,
   swiezoZajety = null,
   wyrenderowano,
-  kanalNaZywo = true,
+  adresKanalu,
 }: Props) {
   const router = useRouter();
   const literyRzedow = useMemo(() => rzedySali({ rzedy, miejscaWRzedzie }), [rzedy, miejscaWRzedzie]);
@@ -53,9 +56,7 @@ export function MapaSali({
 
   // Po „Wstecz" stan z pamięci routera może być stary: pierwsze sprawdzenie od razu.
   const [pierwszeZaMs, ustawPierwszeZaMs] = useState(INTERWAL_ODSWIEZANIA_MS);
-  useEffect(() => {
-    if (wyrenderowano !== undefined && czyPrzywroconyRender(`mapa:${eventId}`, wyrenderowano)) ustawPierwszeZaMs(0);
-  }, [eventId, wyrenderowano]);
+  usePoPrzywroceniu(`mapa:${eventId}`, wyrenderowano, () => ustawPierwszeZaMs(0));
 
   // Kanał na żywo: serwer przysyła pełny stan sali po każdej zmianie.
   const [zKanalu, ustawZKanalu] = useState<{ wersja: Wersja<SzczegolySeansu>; kiedy: number } | null>(null);
@@ -64,7 +65,7 @@ export function MapaSali({
       ustawZKanalu({ wersja: { dane: wiadomosc.dane, etag: wiadomosc.etag }, kiedy: Date.now() });
     }
   }, []);
-  const naZywo = useNaZywo(kanalNaZywo ? sciezkaNaZywo(eventId) : null, naWiadomosc);
+  const naZywo = useNaZywo(adresKanalu === undefined ? sciezkaNaZywo(eventId) : adresKanalu, naWiadomosc);
   const kanalDziala = naZywo.stan === "na-zywo";
 
   const pobierz = useCallback(

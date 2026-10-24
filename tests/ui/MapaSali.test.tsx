@@ -168,6 +168,7 @@ describe("MapaSali: koszt odświeżania", () => {
     await act(() => vi.advanceTimersByTimeAsync(100));
     expect(pobierzSzczegolySeansu).not.toHaveBeenCalled(); // świeże dane z serwera: bez zapytania
     pierwszy.unmount();
+    await act(() => vi.advanceTimersByTimeAsync(800)); // użytkownik był na innej stronie
     render(mapa()); // ten sam znacznik = dane z pamięci routera
     await act(() => vi.advanceTimersByTimeAsync(100));
     expect(pobierzSzczegolySeansu).toHaveBeenCalledTimes(1);

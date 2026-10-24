@@ -13,14 +13,37 @@ function tekst(status: number, tresc: string): Response {
   return new Response(tresc, { status, headers: { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" } });
 }
 
-export async function polaczZSala(zadanie: Request, sale: SaleNamespace | undefined, eventId: string): Promise<Response> {
+export interface OpcjePolaczenia {
+  /**
+   * Dodatkowe dozwolone źródła (Origin), np. strona z `next dev` (http://localhost:3000)
+   * łącząca się z Workerem sali na innym porcie. Na produkcji puste: tylko ta sama domena.
+   */
+  dozwoloneZrodla?: readonly string[];
+}
+
+function czyDozwoloneZrodlo(zadanie: Request, dozwolone: readonly string[]): boolean {
+  const zrodlo = zadanie.headers.get("origin");
+  if (!zrodlo) return true;
+  try {
+    const url = new URL(zrodlo);
+    return url.host === new URL(zadanie.url).host || dozwolone.includes(url.origin);
+  } catch {
+    return false;
+  }
+}
+
+export async function polaczZSala(
+  zadanie: Request,
+  sale: SaleNamespace | undefined,
+  eventId: string,
+  opcje: OpcjePolaczenia = {},
+): Promise<Response> {
   if (zadanie.method !== "GET" || zadanie.headers.get("upgrade")?.toLowerCase() !== "websocket") {
     return tekst(426, "Ten adres obsługuje tylko połączenia WebSocket.");
   }
   if (!czyPoprawneIdSeansu(eventId)) return tekst(404, "Nie ma takiego seansu.");
   // Tylko nasza strona może się podłączyć (ochrona przed podpinaniem cudzych stron do kanału).
-  const zrodlo = zadanie.headers.get("origin");
-  if (zrodlo && new URL(zrodlo).host !== new URL(zadanie.url).host) return tekst(403, "Niedozwolone źródło.");
+  if (!czyDozwoloneZrodlo(zadanie, opcje.dozwoloneZrodla ?? [])) return tekst(403, "Niedozwolone źródło.");
   if (!sale) return tekst(503, "Kanał na żywo jest chwilowo niedostępny.");
 
   const naglowki = new Headers(zadanie.headers);

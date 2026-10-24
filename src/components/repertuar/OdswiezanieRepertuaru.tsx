@@ -6,7 +6,7 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
-import { czyPrzywroconyRender } from "@/hooks/usePrzywroconyRender";
+import { usePoPrzywroceniu } from "@/hooks/usePrzywroconyRender";
 
 export const ODSWIEZANIE_W_TLE_MS = 60_000;
 /** Bez częstszych odświeżeń niż co tyle (np. szybkie przełączanie kart). */
@@ -14,6 +14,7 @@ export const MIN_ODSTEP_MS = 5_000;
 
 export function OdswiezanieRepertuaru({ wyrenderowano }: { wyrenderowano: number }) {
   const router = useRouter();
+  usePoPrzywroceniu("repertuar", wyrenderowano, () => router.refresh());
 
   useEffect(() => {
     let ostatnio = Date.now();
@@ -22,8 +23,6 @@ export function OdswiezanieRepertuaru({ wyrenderowano }: { wyrenderowano: number
       ostatnio = Date.now();
       router.refresh();
     };
-
-    if (czyPrzywroconyRender("repertuar", wyrenderowano)) odswiez(true);
 
     const naZmianeWidocznosci = () => {
       if (document.visibilityState === "visible") odswiez();

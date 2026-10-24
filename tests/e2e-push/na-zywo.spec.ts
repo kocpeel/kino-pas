@@ -11,7 +11,7 @@ function licznikOdpytywania(page: Page, eventId: string) {
 }
 
 test("zmiana na sali dociera do oglądającego od razu, bez odpytywania serwera", async ({ page, request }) => {
-  const seans = (await seanse(request)).at(-1)!;
+  const seans = (await seanse(request))[1]!; // środkowy seans: inne testy e2e go nie rezerwują
   await page.goto(`/seans/${seans.id}`);
   await expect(page.getByText("Na żywo")).toBeVisible();
   const zapytania = licznikOdpytywania(page, seans.id);
@@ -28,7 +28,7 @@ test("zmiana na sali dociera do oglądającego od razu, bez odpytywania serwera"
 });
 
 test("dwie osoby: rezerwacja w jednej przeglądarce od razu szarzeje fotel u drugiej", async ({ browser, request }) => {
-  const seans = (await seanse(request)).at(-1)!;
+  const seans = (await seanse(request))[1]!; // środkowy seans: inne testy e2e go nie rezerwują
   const seatId = await wolnyFotel(request, seans.id);
   const [kontekstA, kontekstB] = await Promise.all([browser.newContext(), browser.newContext()]);
   const [a, b] = await Promise.all([kontekstA.newPage(), kontekstB.newPage()]);

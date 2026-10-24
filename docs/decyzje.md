@@ -95,8 +95,15 @@ WebSocket wszystkich oglądających mapę tej sali:
    pośredników) dostaje automatyczne „pong" bez budzenia obiektu.
 
 Zakup nie zmienia zbioru zajętych foteli (rezerwacja → zakup), więc nie powiadamia sali. Awaria kanału nie psuje rezerwacji.
-W `next dev` kanału nie ma (nie uruchamia `worker.ts`), więc tam mapa używa odpytywania. Push sprawdza się na buildzie:
-`npm run test:e2e:push` (`opennextjs-cloudflare preview`) i testami integracyjnymi Durable Objectu w workerd.
+**Push w `npm run dev`.** `next dev` działa w Node.js i nie uruchamia `worker.ts`: nie zna trasy WebSocket, a emulacja
+bindingów nie odpala klasy Durable Objectu zdefiniowanej w tym samym Workerze. Dlatego `npm run dev` (`scripts/dev.mjs`)
+uruchamia obok `next dev` mały Worker deweloperski `workers/sala-dev` w workerd: ta sama klasa `SalaSeansu`, ta sama lokalna
+baza D1 (to samo `database_id` + `--persist-to .wrangler/state`). Next.js dostaje jego adres w `SALA_DEV_URL`:
+mapa łączy się WebSocketem bezpośrednio z nim (`DOZWOLONE_ZRODLA` wpuszcza stronę z innego portu), a API rezerwacji
+powiadamia go przez lokalny `POST /__dev/zmiana/:id` zamiast RPC. Wybór trybu jest w jednym miejscu: `src/lib/push/tryb-dev.ts`.
+Samo `npm run dev:next` (bez Workera sali) działa dalej, tylko bez kanału, na odpytywaniu. Produkcja się nie zmienia.
+Push sprawdzają: testy integracyjne Durable Objectu w workerd, `npm run test:e2e` (na `npm run dev`) i `npm run test:e2e:push`
+(na buildzie w `opennextjs-cloudflare preview`).
 
 **Mapa sali: zapasowe odpytywanie.** Gdy kanał nie działa (np. sieć blokuje WebSockety), klient ponawia połączenie z backoffem,
 a w tym czasie odpytuje `GET /api/events/:id`, tanio:
