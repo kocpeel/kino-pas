@@ -72,6 +72,8 @@ export default async function StronaSali({ params, searchParams }: Props) {
               poczatkoweZajete={stan.dane.takenSeats}
               swiezoZajety={swiezoZajety}
               wyrenderowano={zegarSystemowy.teraz()}
+              // `next dev` nie uruchamia worker.ts (kanał WebSocket); tam mapa działa na odpytywaniu.
+              kanalNaZywo={process.env.NODE_ENV !== "development"}
             />
           </Karta>
         </>

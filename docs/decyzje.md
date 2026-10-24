@@ -80,7 +80,26 @@ API, a strona dalej pokazywała stare liczby). Cache i strażnik przeciążenia 
 Po stronie przeglądarki repertuar odświeża się sam po „Wstecz" (Next.js pokazuje wtedy stary render z pamięci routera),
 po powrocie na kartę i co 60 s w tle, tylko przy widocznej karcie.
 
-**Mapa sali.** Klient odpytuje `GET /api/events/:id`, ale tanio:
+**Mapa sali: push (kanał na żywo).** Odstępstwo od planu, który wykluczał długie połączenia w Etapie I: na prośbę
+wprowadziliśmy prawdziwy push. Jeden Durable Object `SalaSeansu` na seans (`src/lib/push/sala-seansu.ts`) trzyma połączenia
+WebSocket wszystkich oglądających mapę tej sali:
+
+1. Przeglądarka łączy się z `/api/events/:id/live`. Trasę obsługuje `worker.ts` (własny Worker opakowujący OpenNext), bo route
+   handlery Next.js nie umieją zwrócić odpowiedzi 101. Sprawdza Origin, poprawność id i istnienie seansu.
+2. Po połączeniu obiekt od razu wysyła stan sali: ten sam JSON i ETag co `GET /api/events/:id`.
+3. Po udanej rezerwacji API woła `zmiana()` na obiekcie (RPC, w tle przez `waitUntil`, bez wpływu na odpowiedź). Obiekt czyta
+   stan z D1 (jedyne źródło prawdy) i rozsyła go wszystkim. Seria zmian to jeden odczyt w toku plus najwyżej jeden kolejny.
+4. Wygaśnięcie nie jest zdarzeniem (wygasanie leniwe), więc obiekt nastawia alarm na najbliższe `expiresAt` z bazy
+   i wtedy rozsyła nowy stan. Bez oglądających nie czyta bazy i nie trzyma alarmu.
+5. Hibernacja: bezczynny obiekt jest usypiany, a Cloudflare trzyma połączenia. „ping" co 40 s (podtrzymanie przez
+   pośredników) dostaje automatyczne „pong" bez budzenia obiektu.
+
+Zakup nie zmienia zbioru zajętych foteli (rezerwacja → zakup), więc nie powiadamia sali. Awaria kanału nie psuje rezerwacji.
+W `next dev` kanału nie ma (nie uruchamia `worker.ts`), więc tam mapa używa odpytywania. Push sprawdza się na buildzie:
+`npm run test:e2e:push` (`opennextjs-cloudflare preview`) i testami integracyjnymi Durable Objectu w workerd.
+
+**Mapa sali: zapasowe odpytywanie.** Gdy kanał nie działa (np. sieć blokuje WebSockety), klient ponawia połączenie z backoffem,
+a w tym czasie odpytuje `GET /api/events/:id`, tanio:
 
 | Co | Efekt |
 |---|---|
@@ -91,8 +110,7 @@ po powrocie na kartę i co 60 s w tle, tylko przy widocznej karcie.
 | Pauza na ukrytej karcie, zatrzymanie po 4 porażkach | Zero zapytań z kart w tle. |
 
 Poprawność od tego nie zależy: nieaktualna mapa najwyżej pokaże wolny fotel, który jest już zajęty, a zapis i tak
-odpowie 409. Prawdziwy „push" (Durable Object na seans + WebSocket z hibernacją, rozsyłanie zmian i alarm przy wygaśnięciu)
-dałby aktualizację natychmiast i bez odpytywania, ale plan Etapu I świadomie wyklucza długie połączenia. To kandydat na kolejny etap.
+odpowie 409.
 
 ## 8. Dane między ekranami
 

@@ -98,6 +98,27 @@ Bez ciała. Idempotentny przez warunek na stanie:
 
 Kod biletu: `XXXX-XXXX` z alfabetu Crockforda (bez I, L, O, U), 40 bitów losowości.
 
+### GET /api/events/:id/live (WebSocket)
+
+Kanał na żywo mapy sali. Wymaga `Upgrade: websocket`, a `Origin` (jeśli jest) musi być tym samym hostem.
+
+| Kod | Kiedy |
+|---|---|
+| 101 | Połączono. |
+| 403 | Obcy `Origin`. |
+| 404 | Nieznany seans albo niepoprawny identyfikator. |
+| 426 | Zwykłe żądanie HTTP zamiast WebSocketu. |
+| 503 | Kanał chwilowo niedostępny (brak bindingu Durable Objectu). |
+
+Wiadomości serwera (tekst JSON), wysyłane zaraz po połączeniu, po każdej rezerwacji na tej sali i gdy rezerwacja wygaśnie:
+
+```json
+{ "typ": "stan", "dane": { "event": { "id": "…" }, "takenSeats": ["F7"] }, "etag": "W/\"53a7c646-b3\"" }
+```
+
+`dane` i `etag` są identyczne z odpowiedzią `GET /api/events/:id`, więc po zerwaniu kanału klient wraca do odpytywania
+z `If-None-Match`. Klient może wysyłać `ping` (podtrzymanie), serwer odpowiada `pong`.
+
 ## Priorytety pod obciążeniem
 
 zakup > rezerwacja > szczegóły > lista. Odczyty i zapisy mają osobne pule (bulkhead); 25% puli zapisów jest zarezerwowane dla zakupów.

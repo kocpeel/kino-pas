@@ -42,6 +42,18 @@ export async function szczegolySeansu(db: D1Database, eventId: string, teraz: nu
   return { event, takenSeats };
 }
 
+/** Najbliższa chwila, w której któraś ważna rezerwacja seansu wygaśnie (null = brak takich). */
+export async function najblizszeWygasniecie(db: D1Database, eventId: string, teraz: number): Promise<number | null> {
+  const wiersz = await db
+    .prepare(
+      `SELECT MIN(expiresAt) AS kiedy FROM seats
+        WHERE eventId = ?1 AND status = 'reserved' AND expiresAt > ?2`,
+    )
+    .bind(eventId, teraz)
+    .first<{ kiedy: number | null }>();
+  return wiersz?.kiedy ?? null;
+}
+
 export async function pobierzSeans(db: D1Database, eventId: string): Promise<Seans | null> {
   return db.prepare(SQL_SEANS).bind(eventId).first<Seans>();
 }

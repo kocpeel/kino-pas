@@ -50,7 +50,11 @@ export function obsluzRezerwacje(zadanie: Request, dostawca: DostawcaZaleznosci)
         limitNaEmail: z.konfiguracja.limitAktywnychNaEmail,
       }),
     );
-    if (!wynik.powtorka) uniewaznijPoZapisie(z, wejscie.eventId);
+    if (!wynik.powtorka) {
+      uniewaznijPoZapisie(z, wejscie.eventId);
+      // Oglądający mapę tej sali dostaną nowy stan przez WebSocket. Zakup nie zmienia zajętych foteli.
+      z.powiadomSale?.(wejscie.eventId);
+    }
     return json(wynik.rezerwacja, 201, wynik.powtorka ? { "Idempotent-Replayed": "true" } : {});
   });
 }

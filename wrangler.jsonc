@@ -1,7 +1,8 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "kasa-kino",
-  "main": ".open-next/worker.js",
+  // Własny Worker: OpenNext + kanał WebSocket mapy sali + klasa Durable Objectu (worker.ts).
+  "main": "worker.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
   "assets": {
@@ -13,6 +14,12 @@
     { "binding": "WORKER_SELF_REFERENCE", "service": "kasa-kino" }
   ],
   "observability": { "enabled": true },
+
+  // Jeden Durable Object na seans: trzyma połączenia WebSocket oglądających mapę i rozsyła zmiany.
+  "durable_objects": {
+    "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] }],
 
   "d1_databases": [
     {

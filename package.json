@@ -26,6 +26,7 @@
     "test:int": "vitest run --config vitest.int.config.ts",
     "test:ui": "vitest run --config vitest.ui.config.ts",
     "test:e2e": "playwright test",
+    "test:e2e:push": "opennextjs-cloudflare build && playwright test --config playwright.push.config.ts",
     "test:obciazenie": "k6 run tests/obciazenie/w1-ten-sam-fotel.js"
   },
   "dependencies": {

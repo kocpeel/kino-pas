@@ -6,6 +6,7 @@ import { zegarSystemowy, type Zegar } from "../czas";
 import { wczytajKonfiguracje } from "../config";
 import type { SeansNaLiscie, SzczegolySeansu } from "../domain/typy";
 import { CacheZLimitem } from "../resilience/cache";
+import type { SalaSeansu } from "../push/sala-seansu";
 import type { Limiter } from "../resilience/limit-zapytan";
 import { straznikDlaIzolatu } from "../resilience/przeciazenie";
 import type { CacheKrawedzi, CacheOdczytow, Zaleznosci } from "../zaleznosci";
@@ -14,6 +15,7 @@ export interface Bindingi {
   DB?: D1Database;
   RL_REZERWACJE_IP?: Limiter;
   RL_REZERWACJE_EMAIL?: Limiter;
+  SALE?: DurableObjectNamespace<SalaSeansu>;
   [zmienna: string]: unknown;
 }
 
@@ -50,6 +52,28 @@ export interface OpcjeZaleznosci {
   cache?: CacheOdczytow;
 }
 
+/**
+ * Powiadamia Durable Object sali, że stan seansu się zmienił (rozsyła go oglądającym przez WebSocket).
+ * W tle i bez wpływu na odpowiedź: awaria kanału na żywo nie może zepsuć rezerwacji, a klienci
+ * i tak mają zapasowe odpytywanie.
+ */
+function powiadamiaczSal(
+  sale: DurableObjectNamespace<SalaSeansu> | undefined,
+  wTle: ((obietnica: Promise<unknown>) => void) | undefined,
+): ((eventId: string) => void) | undefined {
+  if (!sale) return undefined;
+  return (eventId) => {
+    try {
+      const praca = Promise.resolve(sale.get(sale.idFromName(eventId)).zmiana(eventId)).catch((blad: unknown) => {
+        console.warn("Nie udało się powiadomić sali", eventId, blad);
+      });
+      wTle?.(praca);
+    } catch (blad) {
+      console.warn("Kanał na żywo niedostępny", blad);
+    }
+  };
+}
+
 export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {}): Zaleznosci {
   const konfiguracja = wczytajKonfiguracje(env);
   return {
@@ -61,5 +85,7 @@ export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {})
     cache: opcje.cache ?? cacheIzolatu(),
     cacheKrawedzi: cacheKrawedziJesliJest(),
     wTle: opcje.wTle,
+    // W `next dev` klasy Durable Objectu nie ma (żyje w worker.ts), więc nie ma kogo powiadamiać.
+    powiadomSale: process.env.NODE_ENV === "development" ? undefined : powiadamiaczSal(env.SALE, opcje.wTle),
   };
 }

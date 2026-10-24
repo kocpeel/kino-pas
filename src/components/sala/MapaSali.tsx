@@ -1,10 +1,13 @@
 "use client";
 
-// Mapa sali: siatka foteli z nawigacją strzałkami (roving tabindex) i odświeżaniem pollingiem.
+// Mapa sali: siatka foteli z nawigacją strzałkami (roving tabindex).
+// Zmiany przychodzą „na żywo" przez WebSocket (serwer sam je wysyła). Gdy kanał nie działa
+// (blokada w sieci, awaria), mapa wraca do adaptacyjnego odpytywania serwera.
 // Kliknięcie wolnego fotela tylko przenosi do formularza: samo w sobie niczego nie rezerwuje.
 
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useNaZywo } from "@/hooks/useNaZywo";
 import { usePolling } from "@/hooks/usePolling";
 import { czyPrzywroconyRender } from "@/hooks/usePrzywroconyRender";
 import { Baner } from "@/components/ui/Baner";
@@ -12,11 +15,12 @@ import { Przycisk } from "@/components/ui/Przycisk";
 import { rzedySali } from "@/lib/domain/uklad-sali";
 import { pobierzSzczegolySeansu, type Wersja } from "@/lib/klient/api";
 import type { SzczegolySeansu } from "@/lib/domain/typy";
+import { czyWiadomoscStanu, sciezkaNaZywo } from "@/lib/push/protokol";
 import { CzasOdswiezenia } from "./CzasOdswiezenia";
 import { Fotel } from "./Fotel";
 import { Legenda } from "./Legenda";
 
-/** Odświeżanie, gdy na sali coś się dzieje albo użytkownik z nią pracuje. */
+/** Odpytywanie zapasowe (gdy kanał na żywo nie działa), gdy na sali coś się dzieje. */
 export const INTERWAL_ODSWIEZANIA_MS = 5000;
 /** Najrzadsze odświeżanie, gdy kolejne odpowiedzi nic nie zmieniają (304). */
 export const MAX_INTERWAL_ODSWIEZANIA_MS = 30_000;
@@ -30,6 +34,8 @@ interface Props {
   swiezoZajety?: string | null;
   /** Znacznik renderu serwera: ten sam przy ponownym montażu = dane z pamięci routera („Wstecz"). */
   wyrenderowano?: number;
+  /** false = bez kanału na żywo (np. `next dev`, który nie uruchamia worker.ts); zostaje odpytywanie. */
+  kanalNaZywo?: boolean;
 }
 
 export function MapaSali({
@@ -39,6 +45,7 @@ export function MapaSali({
   poczatkoweZajete,
   swiezoZajety = null,
   wyrenderowano,
+  kanalNaZywo = true,
 }: Props) {
   const router = useRouter();
   const literyRzedow = useMemo(() => rzedySali({ rzedy, miejscaWRzedzie }), [rzedy, miejscaWRzedzie]);
@@ -50,26 +57,48 @@ export function MapaSali({
     if (wyrenderowano !== undefined && czyPrzywroconyRender(`mapa:${eventId}`, wyrenderowano)) ustawPierwszeZaMs(0);
   }, [eventId, wyrenderowano]);
 
+  // Kanał na żywo: serwer przysyła pełny stan sali po każdej zmianie.
+  const [zKanalu, ustawZKanalu] = useState<{ wersja: Wersja<SzczegolySeansu>; kiedy: number } | null>(null);
+  const naWiadomosc = useCallback((wiadomosc: unknown) => {
+    if (czyWiadomoscStanu(wiadomosc)) {
+      ustawZKanalu({ wersja: { dane: wiadomosc.dane, etag: wiadomosc.etag }, kiedy: Date.now() });
+    }
+  }, []);
+  const naZywo = useNaZywo(kanalNaZywo ? sciezkaNaZywo(eventId) : null, naWiadomosc);
+  const kanalDziala = naZywo.stan === "na-zywo";
+
   const pobierz = useCallback(
     (sygnal: AbortSignal, poprzednia: Wersja<SzczegolySeansu> | undefined) =>
       pobierzSzczegolySeansu(eventId, { sygnal, proby: 1, poprzednia }),
     [eventId],
   );
   const polling = usePolling(pobierz, {
+    // Odpytujemy tylko, gdy kanał na żywo nie działa; po jego zerwaniu od razu.
+    wlaczony: !kanalDziala,
     interwalMs: INTERWAL_ODSWIEZANIA_MS,
     maxInterwalMs: MAX_INTERWAL_ODSWIEZANIA_MS,
-    pierwszeZaMs,
+    pierwszeZaMs: naZywo.bylPolaczony ? 0 : pierwszeZaMs,
     maxPorazek: 4,
     // 304 zwraca ten sam obiekt, więc „bez zmian" = ta sama referencja.
     czyZmiana: (poprzednia, nowa) => poprzednia !== nowa,
   });
 
+  // Najnowszy stan z dwóch źródeł (kanał albo odpytywanie).
+  const aktualne = useMemo(() => {
+    const zPollingu =
+      polling.dane && polling.ostatniaAktualizacja !== null
+        ? { wersja: polling.dane, kiedy: polling.ostatniaAktualizacja }
+        : null;
+    if (!zKanalu || !zPollingu) return zKanalu ?? zPollingu;
+    return zKanalu.kiedy >= zPollingu.kiedy ? zKanalu : zPollingu;
+  }, [zKanalu, polling.dane, polling.ostatniaAktualizacja]);
+
   // Zestaw jest podmieniany przy każdej odpowiedzi, nigdy rozszerzany.
   const zajete = useMemo(() => {
-    const zestaw = new Set(polling.dane?.dane.takenSeats ?? poczatkoweZajete);
-    if (swiezoZajety && !polling.dane) zestaw.add(swiezoZajety);
+    const zestaw = new Set(aktualne?.wersja.dane.takenSeats ?? poczatkoweZajete);
+    if (swiezoZajety && !aktualne) zestaw.add(swiezoZajety);
     return zestaw;
-  }, [polling.dane, poczatkoweZajete, swiezoZajety]);
+  }, [aktualne, poczatkoweZajete, swiezoZajety]);
 
   const [wybrany, ustawWybrany] = useState<string | null>(null);
   const [aktywny, ustawAktywny] = useState<string>(() => {
@@ -197,12 +226,19 @@ export function MapaSali({
       <Legenda />
 
       <div className="sala__stopka" aria-live="off">
-        <CzasOdswiezenia kiedy={polling.ostatniaAktualizacja} />
+        {kanalDziala ? (
+          <span className="na-zywo">
+            <span className="na-zywo__kropka" aria-hidden="true" />
+            Na żywo
+          </span>
+        ) : (
+          <CzasOdswiezenia kiedy={aktualne?.kiedy ?? null} />
+        )}
         <span aria-hidden="true">·</span>
         <span className="cyfry">wolne {numery.length * literyRzedow.length - zajete.size}</span>
       </div>
 
-      {polling.blad ? (
+      {polling.blad && !kanalDziala ? (
         <div className="banery" style={{ marginTop: "var(--odstep-4)" }}>
           <Baner
             rodzaj={polling.zatrzymany ? "blad" : "info"}

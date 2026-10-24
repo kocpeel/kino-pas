@@ -5,6 +5,8 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [{ "binding": "DB", "database_name": "kasa-kino-test", "database_id": "kasa-kino-test" }],
+  "durable_objects": { "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] }],
   "ratelimits": [
     { "name": "RL_REZERWACJE_IP", "namespace_id": "9001", "simple": { "limit": 3, "period": 60 } },
     { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "9002", "simple": { "limit": 3, "period": 60 } }

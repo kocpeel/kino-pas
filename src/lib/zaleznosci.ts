@@ -30,4 +30,6 @@ export interface Zaleznosci {
   cacheKrawedzi?: CacheKrawedzi | undefined;
   /** Praca w tle po wysłaniu odpowiedzi (ctx.waitUntil). */
   wTle?: ((obietnica: Promise<unknown>) => void) | undefined;
+  /** Daje znać kanałowi na żywo (Durable Object sali), że stan seansu się zmienił. */
+  powiadomSale?: ((eventId: string) => void) | undefined;
 }

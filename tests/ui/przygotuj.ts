@@ -1,6 +1,14 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup } from "@testing-library/react";
-import { afterEach, vi } from "vitest";
+import { afterEach, beforeEach, vi } from "vitest";
+import { SztucznyWebSocket } from "./sztuczny-websocket";
+
+// Zamiast prawdziwego WebSocketu z jsdom (który łączyłby się z siecią) atrapa sterowana z testu.
+// Domyślnie nigdy się nie otwiera, więc komponenty zachowują się jak bez kanału na żywo.
+beforeEach(() => {
+  SztucznyWebSocket.instancje = [];
+  vi.stubGlobal("WebSocket", SztucznyWebSocket);
+});
 
 afterEach(() => {
   cleanup();
