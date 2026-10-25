@@ -4,8 +4,8 @@
 // Uruchomienie (k6: https://k6.io):
 //   k6 run -e BASE_URL=https://kasa-kino.<konto>.workers.dev -e EVENT_ID=metropolis-2026-11-06 -e SEAT_ID=H10 \
 //     tests/obciazenie/w1-ten-sam-fotel.js
-// Uwaga: limit żądań na IP (RL_REZERWACJE_IP) odrzuci część żądań z jednej maszyny jako 429;
-// na czas testu podnieś limit w wrangler.jsonc albo uruchom k6 z kilku maszyn.
+// Uwaga: ścisły limit prób na IP (LimiterZadan) odrzuci na produkcji część żądań z jednej maszyny jako 429.
+// Uruchamiaj na środowisku `staging` (limity wyłączone) albo z kilku maszyn. Bez k6: npm run test:obciazenie.
 
 import http from "k6/http";
 import { check } from "k6";

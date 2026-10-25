@@ -28,8 +28,11 @@
     "test:ui": "vitest run --config vitest.ui.config.ts",
     "test:e2e": "playwright test",
     "test:e2e:push": "opennextjs-cloudflare build && playwright test --config playwright.push.config.ts",
-    "test:obciazenie": "k6 run tests/obciazenie/w1-ten-sam-fotel.js",
-    "cf:whoami": "node scripts/cloudflare.mjs wrangler whoami"
+    "test:obciazenie": "node tests/obciazenie/obciazenie.mjs",
+    "cf:whoami": "node scripts/cloudflare.mjs wrangler whoami",
+    "staging:deploy": "opennextjs-cloudflare build && node scripts/cloudflare.mjs opennextjs-cloudflare deploy --env staging",
+    "staging:db": "node scripts/cloudflare.mjs wrangler d1 migrations apply DB --remote --env staging && node scripts/cloudflare.mjs wrangler d1 execute DB --remote --env staging --command \"DELETE FROM seats; DELETE FROM events;\" && node scripts/cloudflare.mjs wrangler d1 execute DB --remote --env staging --file seed/seed.sql",
+    "test:obciazenie:k6": "k6 run tests/obciazenie/w1-ten-sam-fotel.js"
   },
   "dependencies": {
     "@opennextjs/cloudflare": "1.20.13",

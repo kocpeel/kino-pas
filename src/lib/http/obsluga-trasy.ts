@@ -37,10 +37,17 @@ export async function wPuli<T>(
   praca: (db: D1Database) => Promise<T>,
 ): Promise<T> {
   const zwolnij = z.straznik.wejdz(priorytet);
+  const timeoutMs = z.konfiguracja.timeoutBazyMs;
+  const start = Date.now();
   try {
     const db = wymagajBazy(z);
-    return await zTimeoutem(praca(db), z.konfiguracja.timeoutBazyMs);
+    const wynik = await zTimeoutem(praca(db), timeoutMs);
+    z.straznik.zanotujOpoznienie(Date.now() - start);
+    return wynik;
   } catch (blad) {
+    // Błąd domeny (np. 409) to zwykła odpowiedź bazy; awaria albo timeout liczy się jak pełny timeout.
+    const odpowiedzBazy = czyBladDomenowy(blad) && blad.rodzaj !== "NIEDOSTEPNE";
+    z.straznik.zanotujOpoznienie(odpowiedzBazy ? Date.now() - start : timeoutMs);
     if (czyBladDomenowy(blad)) throw blad;
     console.error(`Błąd bazy (${priorytet}):`, blad);
     throw new BladDomenowy("NIEDOSTEPNE", { przyczyna: blad, ponowZaS: 2 });

@@ -6,6 +6,7 @@ export type RodzajBledu =
   | "NIE_ZNALEZIONO"
   | "ZAJETE"
   | "WYGASLA"
+  | "BRAK_DOSTEPU"
   | "KLUCZ_UZYTY"
   | "LIMIT_ZAPYTAN"
   | "LIMIT_REZERWACJI"
@@ -29,6 +30,11 @@ export const OPISY_BLEDOW: Record<RodzajBledu, OpisBledu> = {
     status: 410,
     kod: "reservation_expired",
     komunikat: "Rezerwacja wygasła, fotel wrócił do puli.",
+  },
+  BRAK_DOSTEPU: {
+    status: 403,
+    kod: "reservation_forbidden",
+    komunikat: "Tę rezerwację można kupić i obejrzeć tylko w przeglądarce, w której została zrobiona.",
   },
   KLUCZ_UZYTY: {
     status: 422,

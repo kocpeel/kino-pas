@@ -10,6 +10,8 @@ const kanal = process.env.PW_CHANNEL;
 export default defineConfig({
   testDir: "tests",
   testMatch: /[\\/](e2e|e2e-push)[\\/][^\\/]+\.spec\.ts$/,
+  // CSP z nonce'em ustawia worker.ts, którego `next dev` nie uruchamia: ten test tylko w playwright.push.config.ts.
+  testIgnore: /[\\/]e2e-push[\\/]csp\.spec\.ts$/,
   timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,

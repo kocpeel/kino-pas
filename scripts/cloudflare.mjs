@@ -20,5 +20,9 @@ if (!polecenie) {
   process.exit(2);
 }
 
-const proces = spawn(polecenie, argumenty, { stdio: "inherit", shell: true, env: process.env });
+// `shell: true` (potrzebne na Windows dla npx/wrangler.cmd) skleja argumenty spacjami bez cudzysłowów,
+// więc np. `--command "DELETE FROM seats; DELETE FROM events;"` rozpadłby się na kilka poleceń powłoki.
+// Dlatego składamy linię sami i bierzemy w cudzysłów każdy argument ze spacją lub znakiem specjalnym.
+const cytuj = (argument) => (/^[\w@%+=:,./\\-]+$/.test(argument) ? argument : `"${argument.replace(/"/g, '\\"')}"`);
+const proces = spawn([polecenie, ...argumenty.map(cytuj)].join(" "), { stdio: "inherit", shell: true, env: process.env });
 proces.on("exit", (kod) => process.exit(kod ?? 1));

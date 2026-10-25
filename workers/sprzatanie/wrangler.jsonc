@@ -1,7 +1,8 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  // Mały Worker z Cronem: zwalnia wygasłe rezerwacje i czyści ich dane osobowe.
-  // To tylko optymalizacja: poprawność zapewnia leniwe wygasanie w zapytaniach aplikacji.
+  // Mały Worker z Cronem: co minutę zwalnia wygasłe rezerwacje i czyści ich dane osobowe
+  // (optymalizacja: poprawność zapewnia leniwe wygasanie w zapytaniach aplikacji),
+  // a raz na dobę anonimizuje kupione bilety DATA_RETENTION_DAYS dni po seansie (retencja RODO).
   "name": "kasa-kino-sprzatanie",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
@@ -9,8 +10,13 @@
   // Tylko Cron, bez handlera fetch: nie wystawiamy adresu *.workers.dev.
   "workers_dev": false,
   "triggers": {
-    "crons": ["* * * * *"]
+    // Drugi wpis musi być równy CRON_RETENCJI w src/index.ts.
+    "crons": ["* * * * *", "17 3 * * *"]
   },
+  "vars": { "DATA_RETENTION_DAYS": "30" },
+  // Kontrola zdrowia: GET /api/zdrowie głównego Workera co minutę (src/zdrowie.ts).
+  // Opcjonalny sekret ALERT_WEBHOOK_URL: `npx wrangler secret put ALERT_WEBHOOK_URL --config workers/sprzatanie/wrangler.jsonc`.
+  "services": [{ "binding": "APLIKACJA", "service": "kasa-kino" }],
   "d1_databases": [
     {
       "binding": "DB",

@@ -19,7 +19,12 @@ export default defineConfig({
   },
   projects: [{ name: "desktop", use: { ...devices["Desktop Chrome"], ...(kanal ? { channel: kanal } : {}) } }],
   webServer: {
-    command: `npx opennextjs-cloudflare preview --port ${PORT}`,
+    // Ścisłe limity rezerwacji (Durable Object) trzymają stan w .wrangler/state między uruchomieniami,
+    // więc dla testów je luzujemy; same limity sprawdzają testy integracyjne.
+    command: [
+      `npx opennextjs-cloudflare preview --port ${PORT}`,
+      "--var RESERVATION_ATTEMPTS_PER_IP:1000 --var RESERVATION_ATTEMPTS_PER_EMAIL:1000 --var RESERVATIONS_PER_IP_PER_TTL:0",
+    ].join(" "),
     url: `http://localhost:${PORT}/api/events`,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,

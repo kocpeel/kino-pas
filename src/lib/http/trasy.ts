@@ -7,6 +7,7 @@ import { czyPoprawneIdRezerwacji, kupBilet, zarezerwuj } from "../domain/rezerwa
 import { adresKlienta, sprawdzLimityRezerwacji } from "../resilience/limit-zapytan";
 import { obsluzTrase, wPuli, type DostawcaZaleznosci } from "./obsluga-trasy";
 import { pobierzRepertuar, pobierzSzczegoly, uniewaznijPoZapisie } from "./odczyty";
+import { ciasteczkoRezerwacji, sekretZCiasteczka } from "./ciasteczka";
 import { json, jsonZEtagiem } from "./odpowiedzi";
 import { wejscieRezerwacji } from "./walidacja";
 
@@ -63,18 +64,42 @@ export function obsluzRezerwacje(zadanie: Request, dostawca: DostawcaZaleznosci)
     // Zakup nie zmienia zbioru zajętych foteli, więc tam powiadomienie nie jest potrzebne.
     uniewaznijPoZapisie(z, wejscie.eventId);
     z.powiadomSale?.(wejscie.eventId);
-    return json(wynik.rezerwacja, 201, wynik.powtorka ? { "Idempotent-Replayed": "true" } : {});
+    // Sekret rezerwacji tylko w ciasteczku HttpOnly: treść odpowiedzi zostaje zgodna z kontraktem.
+    const naglowki: Record<string, string> = {
+      "Set-Cookie": ciasteczkoRezerwacji(wynik.rezerwacja.reservationId, wynik.sekret),
+    };
+    if (wynik.powtorka) naglowki["Idempotent-Replayed"] = "true";
+    return json(wynik.rezerwacja, 201, naglowki);
   });
 }
 
 /** POST /api/reservations/:id/purchase — 201 przy pierwszym zakupie, 200 przy powtórce (ten sam kod). */
-export function obsluzZakup(dostawca: DostawcaZaleznosci, reservationId: string): Promise<Response> {
+export function obsluzZakup(zadanie: Request, dostawca: DostawcaZaleznosci, reservationId: string): Promise<Response> {
   return obsluzTrase(dostawca, async (z) => {
     if (!czyPoprawneIdRezerwacji(reservationId)) {
       throw new BladDomenowy("NIEPOPRAWNE_DANE", { komunikat: "Niepoprawny identyfikator rezerwacji." });
     }
     const teraz = z.zegar.teraz();
-    const wynik = await wPuli(z, "zakup", (db) => kupBilet(db, reservationId, { teraz }));
+    const sekret = sekretZCiasteczka(zadanie);
+    const wynik = await wPuli(z, "zakup", (db) => kupBilet(db, reservationId, { teraz, sekret }));
     return json(wynik.bilet, wynik.nowy ? 201 : 200);
+  });
+}
+
+/**
+ * GET /api/zdrowie: czy aplikacja i baza odpowiadają (monitoring, alerty z Workera sprzątającego).
+ * Jedno `SELECT 1` w puli listy, więc przy przeciążeniu odpada pierwsze i samo zgłasza 503.
+ * „degraded" = load shedding zmniejszył pule, bo baza zwolniła.
+ */
+export function obsluzZdrowie(dostawca: DostawcaZaleznosci): Promise<Response> {
+  return obsluzTrase(dostawca, async (z) => {
+    const start = Date.now();
+    await wPuli(z, "lista", (db) => db.prepare("SELECT 1").first());
+    const { opoznienieMs, wspolczynnik } = z.straznik.zdrowieBazy();
+    return json({
+      status: wspolczynnik < 1 ? "degraded" : "ok",
+      db: { latencyMs: Date.now() - start, avgLatencyMs: opoznienieMs },
+      loadShedding: { capacity: wspolczynnik },
+    });
   });
 }

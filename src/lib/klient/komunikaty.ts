@@ -29,6 +29,8 @@ export function opiszBlad(blad: unknown): OpisBleduUi {
       };
     case 400:
       return { tytul: "Sprawdź dane", tresc: blad.message, akcja: null };
+    case 403:
+      return { tytul: "Ta rezerwacja należy do innej przeglądarki", tresc: blad.message, akcja: null };
     case 404:
       return { tytul: "Nie znaleziono", tresc: blad.message, akcja: "mapa" };
     case 409:

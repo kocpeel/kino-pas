@@ -17,9 +17,15 @@
 
   // Jeden Durable Object na seans: trzyma połączenia WebSocket oglądających mapę i rozsyła zmiany.
   "durable_objects": {
-    "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }]
+    "bindings": [
+      { "name": "SALE", "class_name": "SalaSeansu" },
+      { "name": "LIMITER", "class_name": "LimiterZadan" }
+    ]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] }],
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
+    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+  ],
 
   "d1_databases": [
     {
@@ -47,10 +53,14 @@
     // Ile aktywnych rezerwacji może mieć jeden e-mail naraz (0 = bez limitu).
     "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
     "RATE_LIMIT_PERIOD_SECONDS": "60",
+    "RESERVATION_ATTEMPTS_PER_IP": "10",
+    "RESERVATION_ATTEMPTS_PER_EMAIL": "5",
+    "RESERVATIONS_PER_IP_PER_TTL": "12",
     "EVENTS_CACHE_SECONDS": "5",
     "DB_TIMEOUT_MS": "3000",
     "LOAD_SHED_MAX_READS": "64",
-    "LOAD_SHED_MAX_WRITES": "32"
+    "LOAD_SHED_MAX_WRITES": "32",
+    "LOAD_SHED_DB_LATENCY_TARGET_MS": "800"
   },
 
   "env": {
@@ -76,10 +86,58 @@
         "RESERVATION_TTL_SECONDS": "5",
         "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
         "RATE_LIMIT_PERIOD_SECONDS": "60",
+        "RESERVATION_ATTEMPTS_PER_IP": "1000",
+        "RESERVATION_ATTEMPTS_PER_EMAIL": "1000",
+        "RESERVATIONS_PER_IP_PER_TTL": "0",
         "EVENTS_CACHE_SECONDS": "5",
         "DB_TIMEOUT_MS": "3000",
         "LOAD_SHED_MAX_READS": "64",
-        "LOAD_SHED_MAX_WRITES": "32"
+        "LOAD_SHED_MAX_WRITES": "32",
+        "LOAD_SHED_DB_LATENCY_TARGET_MS": "800"
+      }
+    },
+
+    // Środowisko testów obciążeniowych w Cloudflare (tests/obciazenie): osobny Worker i osobna baza.
+    // Limity rezerwacji na IP/e-mail są wyłączone, żeby test z jednej maszyny mierzył wyścig w bazie
+    // i load shedding (ten zostaje jak na produkcji), a nie limiter. Wdrożenie: npm run staging:deploy.
+    "staging": {
+      "name": "kasa-kino-staging",
+      "services": [{ "binding": "WORKER_SELF_REFERENCE", "service": "kasa-kino-staging" }],
+      "durable_objects": {
+        "bindings": [
+          { "name": "SALE", "class_name": "SalaSeansu" },
+          { "name": "LIMITER", "class_name": "LimiterZadan" }
+        ]
+      },
+      "migrations": [
+        { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
+        { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+      ],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "kasa-kino-db-staging",
+          "database_id": "c7bb330d-60d9-4170-b9f9-5abb55f6444a",
+          "migrations_dir": "migrations"
+        }
+      ],
+      "ratelimits": [
+        { "name": "RL_REZERWACJE_IP", "namespace_id": "4301", "simple": { "limit": 100000, "period": 60 } },
+        { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "4302", "simple": { "limit": 100000, "period": 60 } },
+        { "name": "RL_KANAL_IP", "namespace_id": "4303", "simple": { "limit": 100000, "period": 60 } }
+      ],
+      "vars": {
+        "RESERVATION_TTL_SECONDS": "120",
+        "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
+        "RATE_LIMIT_PERIOD_SECONDS": "60",
+        "RESERVATION_ATTEMPTS_PER_IP": "0",
+        "RESERVATION_ATTEMPTS_PER_EMAIL": "0",
+        "RESERVATIONS_PER_IP_PER_TTL": "0",
+        "EVENTS_CACHE_SECONDS": "5",
+        "DB_TIMEOUT_MS": "3000",
+        "LOAD_SHED_MAX_READS": "64",
+        "LOAD_SHED_MAX_WRITES": "32",
+        "LOAD_SHED_DB_LATENCY_TARGET_MS": "800"
       }
     }
   }

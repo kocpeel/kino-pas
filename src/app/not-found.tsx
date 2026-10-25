@@ -1,6 +1,9 @@
+import { connection } from "next/server";
 import { LinkPrzycisk } from "@/components/ui/Przycisk";
 
-export default function NieZnaleziono() {
+export default async function NieZnaleziono() {
+  // Renderowana na żądanie, nie przy buildzie: tylko wtedy jej skrypty dostają nonce z CSP (worker.ts).
+  await connection();
   return (
     <div className="komunikat-strony">
       <h1 className="tytul-strony">Nie znaleziono</h1>

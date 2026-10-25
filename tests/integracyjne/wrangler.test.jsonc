@@ -5,17 +5,29 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "d1_databases": [{ "binding": "DB", "database_name": "kasa-kino-test", "database_id": "kasa-kino-test" }],
-  "durable_objects": { "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "SALE", "class_name": "SalaSeansu" },
+      { "name": "LIMITER", "class_name": "LimiterZadan" }
+    ]
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
+    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+  ],
+  // Bindingi rezerwacji celowo luźne: testy sprawdzają ścisły limiter na Durable Object (LIMITER).
   "ratelimits": [
-    { "name": "RL_REZERWACJE_IP", "namespace_id": "9001", "simple": { "limit": 3, "period": 60 } },
-    { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "9002", "simple": { "limit": 3, "period": 60 } },
+    { "name": "RL_REZERWACJE_IP", "namespace_id": "9001", "simple": { "limit": 1000, "period": 60 } },
+    { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "9002", "simple": { "limit": 1000, "period": 60 } },
     { "name": "RL_KANAL_IP", "namespace_id": "9003", "simple": { "limit": 3, "period": 60 } }
   ],
   "vars": {
     "RESERVATION_TTL_SECONDS": "120",
     "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
     "RATE_LIMIT_PERIOD_SECONDS": "60",
+    "RESERVATION_ATTEMPTS_PER_IP": "3",
+    "RESERVATION_ATTEMPTS_PER_EMAIL": "3",
+    "RESERVATIONS_PER_IP_PER_TTL": "5",
     "EVENTS_CACHE_SECONDS": "5",
     "DB_TIMEOUT_MS": "3000",
     "LOAD_SHED_MAX_READS": "64",

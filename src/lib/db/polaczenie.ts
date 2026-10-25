@@ -3,12 +3,13 @@
 // `zaleznosciZBindingow` bezpośrednio ze środowiskiem z Miniflare.
 
 import { zegarSystemowy, type Zegar } from "../czas";
-import { wczytajKonfiguracje } from "../config";
+import { wczytajKonfiguracje, type Konfiguracja } from "../config";
 import type { SeansNaLiscie, SzczegolySeansu } from "../domain/typy";
 import { CacheZLimitem } from "../resilience/cache";
 import type { SalaSeansu } from "../push/sala-seansu";
 import { adresSaliDev, czyNextDev } from "../push/tryb-dev";
-import type { Limiter } from "../resilience/limit-zapytan";
+import { lancuchLimiterow, limiterNaObiekcie, type Limiter, type Limitery } from "../resilience/limit-zapytan";
+import type { LimiterZadan } from "../resilience/limiter-zadan";
 import { straznikDlaIzolatu } from "../resilience/przeciazenie";
 import type { CacheKrawedzi, CacheOdczytow, Zaleznosci } from "../zaleznosci";
 
@@ -17,6 +18,7 @@ export interface Bindingi {
   RL_REZERWACJE_IP?: Limiter;
   RL_REZERWACJE_EMAIL?: Limiter;
   SALE?: DurableObjectNamespace<SalaSeansu>;
+  LIMITER?: DurableObjectNamespace<LimiterZadan>;
   [zmienna: string]: unknown;
 }
 
@@ -89,14 +91,41 @@ function powiadamiaczSaliDev(
   };
 }
 
+/**
+ * Limitery rezerwacji: najpierw tani binding (przybliżony, odsiewa zalew), potem ścisły Durable Object.
+ * W `next dev` klasy obiektu nie ma, więc zostaje sam binding.
+ */
+function limiteryRezerwacji(env: Bindingi, k: Konfiguracja): Limitery {
+  const obiekty = czyNextDev() ? undefined : env.LIMITER;
+  const okres = k.okresLimituS;
+  const ttlS = Math.ceil(k.ttlMs / 1000);
+  return {
+    ip: lancuchLimiterow(
+      env.RL_REZERWACJE_IP,
+      limiterNaObiekcie(obiekty, "rezerwacje", [
+        { limit: k.limitProbNaIp, oknoS: okres },
+        { limit: k.limitRezerwacjiNaIpWTtl, oknoS: ttlS },
+      ]),
+    ),
+    email: lancuchLimiterow(
+      env.RL_REZERWACJE_EMAIL,
+      limiterNaObiekcie(obiekty, "rezerwacje", [{ limit: k.limitProbNaEmail, oknoS: okres }]),
+    ),
+  };
+}
+
 export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {}): Zaleznosci {
   const konfiguracja = wczytajKonfiguracje(env);
   return {
     db: env.DB,
     konfiguracja,
     zegar: opcje.zegar ?? zegarSystemowy,
-    limitery: { ip: env.RL_REZERWACJE_IP, email: env.RL_REZERWACJE_EMAIL },
-    straznik: straznikDlaIzolatu({ maxOdczytow: konfiguracja.maxOdczytow, maxZapisow: konfiguracja.maxZapisow }),
+    limitery: limiteryRezerwacji(env, konfiguracja),
+    straznik: straznikDlaIzolatu({
+      maxOdczytow: konfiguracja.maxOdczytow,
+      maxZapisow: konfiguracja.maxZapisow,
+      celOpoznieniaMs: konfiguracja.celOpoznieniaBazyMs,
+    }),
     cache: opcje.cache ?? cacheIzolatu(),
     cacheKrawedzi: cacheKrawedziJesliJest(),
     wTle: opcje.wTle,

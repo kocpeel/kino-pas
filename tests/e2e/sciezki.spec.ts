@@ -84,12 +84,20 @@ test("4. odświeżenie strony licznika i biletu: nic nie wybucha, kod ten sam", 
   await page.reload();
   await expect(kod).toHaveText(tekstKodu!);
 
-  // Nowa karta bez sessionStorage: kod odtworzony idempotentnym POST zakupu.
-  const inny = await browser.newContext();
-  const nowaKarta = await inny.newPage();
+  // Nowa karta tej samej przeglądarki (bez sessionStorage, z ciasteczkiem rezerwacji):
+  // kod odtworzony idempotentnym POST zakupu.
+  const nowaKarta = await page.context().newPage();
   await nowaKarta.goto(page.url());
   await expect(nowaKarta.locator(".bilet__kod")).toHaveText(tekstKodu!);
-  await inny.close();
+  await nowaKarta.close();
+
+  // Inna przeglądarka z samym linkiem: kodu nie widać.
+  const obca = await browser.newContext();
+  const obcaKarta = await obca.newPage();
+  await obcaKarta.goto(page.url());
+  await expect(obcaKarta.getByRole("heading", { name: "Ten bilet otworzysz tylko tam, gdzie go kupiono" })).toBeVisible();
+  await expect(obcaKarta.getByText(tekstKodu!)).toHaveCount(0);
+  await obca.close();
 });
 
 test("5. telefon (375 px): mapa mieści się bez przewijania poziomego", async ({ browser, request }) => {

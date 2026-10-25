@@ -1,3 +1,4 @@
+import { runInDurableObject } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { utworzZegarTestowy } from "../../src/lib/czas";
@@ -8,6 +9,7 @@ import {
   kup,
   SEANS,
   zadanieGet,
+  zadanieZakupu,
   zadanieRezerwacji,
   zarezerwuj,
   zasiej,
@@ -21,6 +23,12 @@ beforeEach(async () => {
   vi.spyOn(console, "error").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
+
+/** Ten sam skrót klucza co w limit-zapytan.ts (pierwsze 16 bajtów SHA-256, hex). */
+async function skrotTestowy(tekst: string): Promise<string> {
+  const hash = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(tekst)));
+  return Array.from(hash.slice(0, 16), (b) => b.toString(16).padStart(2, "0")).join("");
+}
 
 /** Limiter z oknem stałym liczonym zegarem testowym (do testu „po oknie znowu działa"). */
 function limiterOkienny(limit: number, okresMs: number, teraz: () => number): Limiter {
@@ -58,14 +66,45 @@ describe("rate limiting", () => {
     expect((await zIp("A3", "1.1.1.1", "a3@example.com")).status).toBe(201);
   });
 
-  it("prawdziwy binding Rate Limiting (Miniflare) przez pełną ścieżkę Workera", async () => {
-    const wyslij = (seatId: string, email: string, ip: string) =>
-      exports.default.fetch(zadanieRezerwacji({ seatId, email }, { ip }));
+  // Pełna ścieżka Workera z prawdziwym Durable Objectem `LimiterZadan` (limit 3 próby/min na IP i na e-mail,
+  // 5 rezerwacji na IP w czasie TTL; wrangler.test.jsonc). Bindingi Rate Limiting są tu luźne.
+  const wyslij = (seatId: string, email: string, ip: string) =>
+    exports.default.fetch(zadanieRezerwacji({ seatId, email }, { ip }));
+
+  it("ścisły limiter (Durable Object): 20 równoległych prób z jednego IP → dokładnie 3 przechodzą", async () => {
+    const odpowiedzi = await Promise.all(
+      Array.from({ length: 20 }, (_, i) => wyslij(`B${(i % 10) + 1}`, `rownolegle${i}@example.com`, "9.9.9.9")),
+    );
+    const statusy = odpowiedzi.map((o) => o.status);
+    expect(statusy.filter((s) => s !== 429)).toHaveLength(3);
+    for (const odp of odpowiedzi.filter((o) => o.status === 429)) {
+      const ponow = Number(odp.headers.get("retry-after"));
+      expect(ponow).toBeGreaterThanOrEqual(1);
+      expect(ponow).toBeLessThanOrEqual(60);
+    }
+    // Inny adres ma własny limit.
+    expect((await wyslij("C1", "inny-adres@example.com", "8.8.8.8")).status).toBe(201);
+  });
+
+  it("ścisły limiter: limit na e-mail działa niezależnie od IP", async () => {
     const statusy: number[] = [];
-    for (let i = 1; i <= 4; i++) statusy.push((await wyslij(`B${i}`, `rl${i}@example.com`, "9.9.9.9")).status);
+    for (let i = 1; i <= 4; i++) statusy.push((await wyslij(`D${i}`, "ten-sam@example.com", `10.9.0.${i}`)).status);
+    // Czwarta: limit prób na e-mail (3/min); limit aktywnych rezerwacji (4) jeszcze by przepuścił.
     expect(statusy).toEqual([201, 201, 201, 429]);
-    const inny = await wyslij("B5", "rl5@example.com", "8.8.8.8");
-    expect(inny.status).toBe(201);
+  });
+
+  it("jeden adres IP nie trzyma więcej foteli niż limit rezerwacji w czasie TTL (5 na 120 s)", async () => {
+    // Pięć rezerwacji z ostatnich 120 s, ale żadnej z ostatniej minuty: limit minutowy by przepuścił.
+    const teraz = Date.now();
+    const obiekt = env.LIMITER!.get(env.LIMITER!.idFromName(`rezerwacje:ip:${await skrotTestowy("7.7.7.7")}`));
+    await runInDurableObject(obiekt, (_instancja, stan) =>
+      stan.storage.put("trafienia", [teraz - 100_000, teraz - 90_000, teraz - 80_000, teraz - 70_000, teraz - 65_000]),
+    );
+    const odp = await wyslij("E1", "ttl@example.com", "7.7.7.7");
+    expect(odp.status).toBe(429);
+    // Miejsce zwolni się, gdy najstarsza z pięciu (sprzed 100 s) wypadnie z okna 120 s.
+    expect(Number(odp.headers.get("retry-after"))).toBeGreaterThanOrEqual(19);
+    expect(Number(odp.headers.get("retry-after"))).toBeLessThanOrEqual(21);
   });
 
   it("limit na e-mail niezależny od IP", async () => {
@@ -200,8 +239,9 @@ describe("błędne wejście → kontrolowane 4xx, nigdy 500", () => {
   });
 
   it("zły identyfikator rezerwacji przy zakupie → 400, nieznany → 410", async () => {
-    expect((await obsluzZakup(z, "abc")).status).toBe(400);
-    expect((await obsluzZakup(z, "0f8fad5b-d9cb-469f-a165-70867728950e")).status).toBe(410);
+    expect((await obsluzZakup(zadanieZakupu("abc", null), z, "abc")).status).toBe(400);
+    const nieznana = "0f8fad5b-d9cb-469f-a165-70867728950e";
+    expect((await obsluzZakup(zadanieZakupu(nieznana, null), z, nieznana)).status).toBe(410);
   });
 
   it("nieistniejący seans w szczegółach → 404", async () => {

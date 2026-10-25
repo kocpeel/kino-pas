@@ -52,7 +52,7 @@ Cron jest w osobnym Workerze, bo Worker generowany przez OpenNext obsługuje tyl
 |---|---|---|
 | Timeout | `resilience/timeout.ts` (serwer, `DB_TIMEOUT_MS`), `klient/api.ts` (8 s, każdy fetch) | Zapytania D1 nie da się anulować, dlatego ponowienia są idempotentne. |
 | Retry | `klient/api.ts` | GET: 3 próby, backoff z pełnym jitterem, szanuje `Retry-After` ≤ 5 s. POST rezerwacji tylko z kluczem. Zakup też (idempotentny przez stan). |
-| Rate limiting | `resilience/limit-zapytan.ts`, binding Workers Rate Limiting | Osobno IP i e-mail (e-mail jako skrót SHA-256). Awaria limitera = przepuszczamy (fail-open). |
+| Rate limiting | `resilience/limit-zapytan.ts`, binding Workers Rate Limiting (sito), Durable Object `LimiterZadan` (ścisły) | Osobno IP i e-mail (oba jako skrót SHA-256). Na IP dwie reguły: 10 prób/min i 12 rezerwacji w czasie TTL (tyle foteli naraz trzyma jeden adres). Na e-mail 5 prób/min. Awaria limitera = przepuszczamy (fail-open). |
 | Limit aktywnych rezerwacji | podzapytanie w UPDATE | Założenie spoza treści zadania. `MAX_ACTIVE_RESERVATIONS_PER_EMAIL=0` wyłącza. |
 | Load shedding + bulkhead | `resilience/przeciazenie.ts` | Osobne pule odczytów i zapisów, priorytety zakup > rezerwacja > szczegóły > lista. Liczniki per izolat (przybliżenie). |
 | Fallback | `http/odczyty.ts` | Lista z cache (izolat + Cache API), baner „Pokazujemy dane sprzed chwili", rezerwowanie wyłączone. |
@@ -111,8 +111,8 @@ a po timeoucie nie wiadomo, czy zapis się udał, więc w obu przypadkach formul
 Uwaga o bindingu Rate Limiting: Cloudflare liczy w nim w przybliżeniu (lokalny licznik w każdej instancji, synchronizacja
 w tle; dokumentacja: *„Requests can exceed your configured limit"*, a do ścisłych limitów zaleca Durable Objects).
 Na produkcji 120 połączeń z jednego IP w ciągu ok. 2 minut przeszło mimo limitu 60/min, dlatego ścisły limit połączeń jest w sali.
-To samo dotyczy limitu rezerwacji na IP/e-mail (zmierzone: 14 rezerwacji z jednego IP mimo limitu 10/min) — tam ścisłą
-granicą pozostaje limit aktywnych rezerwacji na e-mail w zapytaniu SQL.
+To samo dotyczyło limitu rezerwacji na IP/e-mail (zmierzone: 14 rezerwacji z jednego IP mimo limitu 10/min), dlatego
+ścisły limit rezerwacji też liczy Durable Object (`LimiterZadan`, sekcja 11).
 
 **Push w `npm run dev`.** `next dev` działa w Node.js i nie uruchamia `worker.ts`: nie zna trasy WebSocket, a emulacja
 bindingów nie odpala klasy Durable Objectu zdefiniowanej w tym samym Workerze. Dlatego `npm run dev` (`scripts/dev.mjs`)
@@ -142,18 +142,48 @@ odpowie 409.
 
 Kontrakt nie ma GET rezerwacji, więc `eventId`, `seatId` i `reservationId` są w adresie, a `expiresAt`, imię,
 e-mail i kod w `sessionStorage` (z `try/catch`). Dane osobowe nigdy nie trafiają do URL. Bilet otwarty w nowej
-karcie odtwarza kod idempotentnym POST zakupu. Uwaga: dla jeszcze nieopłaconej, ważnej rezerwacji wejście na
-`/bilet/:id` ją kupi, bo tak działa zakup bez płatności w Etapie I; do strony biletu prowadzi tylko udany zakup.
+karcie tej samej przeglądarki odtwarza kod idempotentnym POST zakupu (z ciasteczkiem rezerwacji, sekcja 11).
+Uwaga: dla jeszcze nieopłaconej, ważnej rezerwacji wejście na `/bilet/:id` w tej przeglądarce ją kupi, bo tak działa
+zakup bez płatności w Etapie I; do strony biletu prowadzi tylko udany zakup.
 
 ## 9. Testy: co dowodzą, a czego nie
 
 Lokalny D1 serializuje zapisy, więc testy W1–W6 dowodzą poprawności **warunków w zapytaniach**, a nie zachowania
-pod prawdziwym opóźnieniem sieci. Do tego jest `tests/obciazenie/w1-ten-sam-fotel.js` (k6) na środowisku
-testowym w Cloudflare.
+pod prawdziwym opóźnieniem sieci. Do tego jest test obciążeniowy na osobnym środowisku w Cloudflare
+(`tests/obciazenie/obciazenie.mjs`, Worker `kasa-kino-staging` z bazą `kasa-kino-db-staging`, limity na IP/e-mail
+wyłączone, load shedding jak na produkcji). Klienci zachowują się jak przeglądarka: własny `Idempotency-Key`,
+ponowienie po 503 z tym samym kluczem. Wynik z 25.10.2026, dwa przebiegi na świeżych danych, oba 12/12:
+
+| Scenariusz | Wynik | Czasy (p50 / p95) |
+|---|---|---|
+| W1: 50 osób naraz o jeden fotel | dokładnie 1 × 201, 49 × 409, zero 5xx, mapa pokazuje fotel zajęty | 268–582 / 689–704 ms |
+| W2: 80 osób naraz o 80 różnych foteli | 80 × 201, sala pełna, repertuar po 6 s: 0 wolnych | 298–381 / 589–597 ms |
+| W3: 20 równoległych zakupów jednej rezerwacji | 1 × 201, 19 × 200 z tym samym kodem; bez ciasteczka 403 bez kodu | 199–204 / 417–615 ms |
+| R: 600 odczytów listy i mapy, 100 naraz | 600 × 200 | 101–136 / 514–593 ms |
+
+Ograniczenie: wszystkie żądania szły z jednej maszyny (jedna lokalizacja Cloudflare). Load shedding się nie włączył
+(zero 503), więc przy tym ruchu nie był potrzebny. Wersja k6 (`tests/obciazenie/w1-ten-sam-fotel.js`) zostaje do
+uruchomienia z kilku maszyn.
 
 ## 10. Środowisko i narzędzia
 
 - Next.js 16 + `@opennextjs/cloudflare` 1.20, Wrangler 4, D1, Rate Limiting binding.
 - `@cloudflare/vitest-pool-workers` zostało przemianowane na `@cloudflare/vitest-plugin` (API `cloudflareTest()`).
-- `.npmrc` ma `legacy-peer-deps=true`: npm 10 wywraca się na drzewie peer-dependencies Vitest 4
-  (`Cannot read properties of null (reading 'edgesOut')`).
+- Bez `.npmrc`. Wcześniej było tam `legacy-peer-deps=true`, bo npm 10 wywracał się na drzewie peer-dependencies
+  Vitest 4 (`Cannot read properties of null (reading 'edgesOut')`). Na npm 10.9.8 `npm ci`, `npm install` oraz
+  dodanie i usunięcie paczki działają bez tej flagi (sprawdzone na czystej kopii), więc obejście usunięto.
+
+## 11. Domknięte luki (przegląd z 25.10.2026)
+
+| Luka | Rozwiązanie | Gdzie | Testy |
+|---|---|---|---|
+| Bot z wieloma e-mailami mógł zająć całą salę: limit na IP stał na przybliżonym bindingu (zmierzone: 14 rezerwacji z jednego IP mimo 10/min). | Ścisły limiter na Durable Object `LimiterZadan`: jeden obiekt na skrót IP albo e-maila, okno przesuwne, sprawdzenie i zapis bez przerwy na `await` (atomowe). Na IP dwie reguły: 10 prób/min i **12 rezerwacji w czasie TTL**, więc jeden adres nie trzyma naraz więcej niż 12 foteli. Na e-mail 5 prób/min (plus dotychczasowe 4 aktywne rezerwacje w SQL). Binding zostaje jako tanie pierwsze sito, Retry-After mówi, kiedy zwolni się miejsce w oknie. Odrzucona próba się nie liczy, alarm kasuje dane obiektu po upływie okna. | `resilience/limiter-zadan.ts`, `resilience/limit-zapytan.ts` (`ocenProbe`), vars `RESERVATION_ATTEMPTS_PER_IP`, `RESERVATION_ATTEMPTS_PER_EMAIL`, `RESERVATIONS_PER_IP_PER_TTL` | 20 równoległych prób z jednego IP → dokładnie 3 (limit testowy); reguła TTL; okno przesuwne (jednostkowe) |
+| `reservationId` w adresie działał jak hasło: kto miał link, mógł kupić cudzą rezerwację albo zobaczyć kod biletu. | Rezerwacja ustawia ciasteczko `kasa_rez` (32 losowe bajty, `HttpOnly; Secure; SameSite=Strict; Path=/api/reservations/:id`). Baza trzyma tylko skrót SHA-256 (`seats.secretHash`, migracja 0003). Zakup i powtórka zakupu wymagają pasującego ciasteczka (inaczej 403, bez kodu). Powtórka rezerwacji z tym samym kluczem wydaje nowy sekret. Wygasła rezerwacja dalej daje 410 (nie zdradzamy więcej). Wiersze sprzed migracji (`secretHash IS NULL`) działają jak dawniej. | `http/ciasteczka.ts`, `domain/rezerwacja.ts`, `db/zapytania-miejsca.ts`, UI: `AkcjeBiletu`, `Licznik` | integracyjne (403, rotacja sekretu, sprzątanie), komponent 403, e2e: nowa karta tej samej przeglądarki widzi kod, inna przeglądarka nie |
+| Brak retencji danych osobowych. | Worker sprzątający ma drugi Cron (`17 3 * * *`): kupione bilety tracą imię, e-mail, skrót sekretu i klucz idempotencji `DATA_RETENTION_DAYS` dni po seansie (domyślnie 30). Status i kod biletu zostają (nie są danymi osobowymi), więc sala się nie zmienia. Zła wartość zmiennej nie skasuje danych wcześniej (wraca do 30). | `workers/sprzatanie/src/index.ts`, `anonimizujPoSeansach` | integracyjne (granica 30 dni, inne seanse, zła wartość, wybór crona) |
+| Brak CI. | GitHub Actions: typy, statyczny test wycieków, jednostkowe, integracyjne (workerd + D1), komponenty, potem e2e (Playwright + Chromium na `npm run dev`). Bez sekretów Cloudflare. | `.github/workflows/testy.yml` | uruchomi się po pierwszym pushu |
+| Brak Content-Security-Policy. | Nonce na każde żądanie strony w `worker.ts` (Next.js 16 czyta go z nagłówka CSP żądania i dokleja do swoich skryptów): `script-src 'self' 'nonce-…' 'strict-dynamic'`, `object-src 'none'`, `frame-ancestors 'none'`, `connect-src` z `wss:` kanału na żywo. Node'owy `proxy.ts` odpadł, bo OpenNext oznacza go jako eksperymentalny. `/_not-found` renderowane na żądanie (`connection()`), żeby też dostało nonce. W `next dev` łagodniejsza polityka bez nonce'a (React dev potrzebuje `eval`). Do tego HSTS, `Cross-Origin-Opener-Policy`, `Permissions-Policy`. | `http/csp.ts`, `worker.ts`, `next.config.ts` | jednostkowe; e2e na buildzie: nonce na każdym skrypcie, nowy przy każdym żądaniu, zero naruszeń na repertuarze, mapie z WebSocketem, formularzu i 404 |
+| „Nie znaleziono" zwracało HTTP 200 (streaming przez `loading.tsx` zaczynał się przed `notFound()`). | Sprawdzenie istnienia seansu, fotela i formatu identyfikatora w `layout.tsx` każdej trasy (layout renderuje się przed granicą `loading`). Mapa przeniesiona do grupy `(mapa)`, żeby jej `loading.tsx` nie obejmował layoutu fotela. | `src/app/**/layout.tsx` | curl na dev i e2e na buildzie: 404 |
+| Load shedding liczony per izolat. | Strażnik dodatkowo patrzy na sygnał wspólny dla wszystkich izolatów: średnią wykładniczą opóźnienia D1. Powyżej celu (`LOAD_SHED_DB_LATENCY_TARGET_MS`, 800 ms) pule maleją proporcjonalnie (do 25%), zakupy zawsze mają pełną pulę. Awaria i timeout liczą się jak pełny timeout. Po 10 s bez pomiarów średnia przestaje ograniczać. | `resilience/przeciazenie.ts`, `http/obsluga-trasy.ts` | jednostkowe |
+| Brak alertów. | `GET /api/zdrowie` (`SELECT 1` w puli listy, `degraded`, gdy działa load shedding). Worker sprzątający co minutę woła je przez service binding. Problem: jedna linia JSON z polem `alert` w Workers Logs, a z sekretem `ALERT_WEBHOOK_URL` także webhook (Slack/Discord). Alert po 2 nieudanych kontrolach, przypomnienie co 30 min, jedna wiadomość po naprawie (stan w `alert_state`, migracja 0004). | `workers/sprzatanie/src/zdrowie.ts` | integracyjne (cała sekwencja, bez webhooka, baza stanu niedostępna, awaria webhooka) |
+| `.npmrc` z `legacy-peer-deps`. | Usunięte (sekcja 10). | | czysta instalacja |
+| Test obciążeniowy nie był uruchomiony w Cloudflare. | Środowisko `staging` i test w Node (bez k6), sekcja 9. Przy okazji naprawiony `scripts/cloudflare.mjs`: gubił cudzysłowy argumentów ze spacjami (`--command "…; …"` rozpadało się na kilka poleceń powłoki). | `tests/obciazenie/obciazenie.mjs`, `wrangler.jsonc` (`env.staging`) | 12/12 niezmienników, dwa przebiegi |

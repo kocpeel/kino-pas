@@ -3,7 +3,13 @@ import { generujKodBiletu } from "../../src/lib/domain/rezerwacja";
 import { BladDomenowy } from "../../src/lib/domain/bledy";
 import { opoznienieBackoff } from "../../src/lib/klient/api";
 import { CacheZLimitem } from "../../src/lib/resilience/cache";
-import { sprawdzLimityRezerwacji, type Limiter } from "../../src/lib/resilience/limit-zapytan";
+import {
+  lancuchLimiterow,
+  ocenProbe,
+  sprawdzLimityRezerwacji,
+  type Limiter,
+  type RegulaLimitu,
+} from "../../src/lib/resilience/limit-zapytan";
 import { StraznikPrzeciazenia } from "../../src/lib/resilience/przeciazenie";
 import { zTimeoutem } from "../../src/lib/resilience/timeout";
 
@@ -90,6 +96,61 @@ describe("load shedding z priorytetami", () => {
   });
 });
 
+describe("load shedding a opóźnienie bazy (sygnał wspólny dla izolatów)", () => {
+  function straznikZZegarem() {
+    let t = 0;
+    const straznik = new StraznikPrzeciazenia({ maxOdczytow: 40, maxZapisow: 40, celOpoznieniaMs: 500 }, () => t);
+    return { straznik, przewin: (ms: number) => (t += ms) };
+  }
+
+  it("szybka baza: pełne pule", () => {
+    const { straznik } = straznikZZegarem();
+    for (let i = 0; i < 10; i++) straznik.zanotujOpoznienie(80);
+    expect(straznik.wspolczynnik()).toBe(1);
+  });
+
+  it("wolna baza: pule maleją proporcjonalnie, ale zakupy zachowują pełną pulę", () => {
+    const { straznik } = straznikZZegarem();
+    straznik.zanotujOpoznienie(2000); // 4× ponad cel → 25%
+    expect(straznik.wspolczynnik()).toBe(0.25);
+    // Odczyty: 40 × 25% = 10.
+    const odczyty = Array.from({ length: 10 }, () => straznik.wejdz("szczegoly"));
+    expect(straznik.czyPrzyjac("szczegoly")).toBe(false);
+    odczyty.forEach((z) => z());
+    // Rezerwacje: 40 × 25% × 75% = 7; zakupy dalej do 40.
+    const zapisy = Array.from({ length: 7 }, () => straznik.wejdz("rezerwacja"));
+    expect(straznik.czyPrzyjac("rezerwacja")).toBe(false);
+    expect(straznik.czyPrzyjac("zakup")).toBe(true);
+    zapisy.forEach((z) => z());
+  });
+
+  it("średnia wykładnicza: pojedynczy wolny pomiar nie dławi od razu, seria tak; po poprawie wraca", () => {
+    const { straznik } = straznikZZegarem();
+    for (let i = 0; i < 10; i++) straznik.zanotujOpoznienie(100);
+    straznik.zanotujOpoznienie(3000); // średnia 100 + 0,2 × 2900 = 680 ms
+    expect(straznik.wspolczynnik()).toBeCloseTo(500 / 680, 5);
+    for (let i = 0; i < 4; i++) straznik.zanotujOpoznienie(3000); // średnia ≈ 2050 ms
+    expect(straznik.wspolczynnik()).toBe(0.25);
+    for (let i = 0; i < 10; i++) straznik.zanotujOpoznienie(100); // średnia ≈ 310 ms
+    expect(straznik.wspolczynnik()).toBe(1);
+  });
+
+  it("stara średnia (ponad 10 s bez pomiarów) przestaje ograniczać", () => {
+    const { straznik, przewin } = straznikZZegarem();
+    straznik.zanotujOpoznienie(3000);
+    expect(straznik.wspolczynnik()).toBe(0.25);
+    przewin(10_001);
+    expect(straznik.wspolczynnik()).toBe(1);
+    expect(straznik.czyPrzyjac("lista")).toBe(true);
+  });
+
+  it("bez celu (0) opóźnienie nie zmienia pul", () => {
+    const straznik = new StraznikPrzeciazenia({ maxOdczytow: 4, maxZapisow: 4, celOpoznieniaMs: 0 });
+    straznik.zanotujOpoznienie(30_000);
+    expect(straznik.wspolczynnik()).toBe(1);
+  });
+});
+
 describe("timeout", () => {
   afterEach(() => vi.useRealTimers());
 
@@ -123,12 +184,35 @@ describe("rate limiting", () => {
     ).rejects.toMatchObject({ status: 429 });
   });
 
-  it("e-mail trafia do limitera jako skrót, nie jawnie", async () => {
+  it("Retry-After z limitera, gdy go zna (najdłuższy z odmawiających)", async () => {
+    const odmawia = (ponowZaS: number): Limiter => ({ limit: async () => ({ success: false, ponowZaS }) });
+    await expect(
+      sprawdzLimityRezerwacji({ ip: odmawia(7), email: odmawia(300) }, { ip: "1.1.1.1", email: "a@b.pl" }, 60),
+    ).rejects.toMatchObject({ status: 429, ponowZaS: 300 });
+  });
+
+  it("IP i e-mail trafiają do limiterów jako skróty, nie jawnie", async () => {
     const klucze: string[] = [];
     const zapisujacy: Limiter = { limit: async ({ key }) => (klucze.push(key), { success: true }) };
-    await sprawdzLimityRezerwacji({ email: zapisujacy }, { ip: "1.1.1.1", email: "jan@example.com" }, 60);
-    expect(klucze[0]).toMatch(/^email:[0-9a-f]{32}$/);
-    expect(klucze[0]).not.toContain("jan");
+    await sprawdzLimityRezerwacji(
+      { ip: zapisujacy, email: zapisujacy },
+      { ip: "203.0.113.7", email: "jan@example.com" },
+      60,
+    );
+    expect(klucze.sort()).toEqual([expect.stringMatching(/^email:[0-9a-f]{32}$/), expect.stringMatching(/^ip:[0-9a-f]{32}$/)]);
+    expect(klucze.join()).not.toMatch(/jan|203\.0/);
+  });
+
+  it("łańcuch: drugi limiter pytany tylko, gdy pierwszy przepuścił", async () => {
+    const pytania: string[] = [];
+    const nazwany = (nazwa: string, wolno: boolean): Limiter => ({
+      limit: async () => (pytania.push(nazwa), { success: wolno }),
+    });
+    expect(await lancuchLimiterow(nazwany("binding", false), nazwany("obiekt", true))!.limit({ key: "k" })).toEqual({
+      success: false,
+    });
+    expect(pytania).toEqual(["binding"]);
+    expect(lancuchLimiterow(undefined, undefined)).toBeUndefined();
   });
 
   it("awaria limitera nie blokuje sprzedaży", async () => {
@@ -138,5 +222,44 @@ describe("rate limiting", () => {
       sprawdzLimityRezerwacji({ ip: zepsuty }, { ip: "1.1.1.1", email: "a@b.pl" }, 60),
     ).resolves.toBeUndefined();
     ostrzezenie.mockRestore();
+  });
+});
+
+describe("okno przesuwne ścisłego limitera (ocenProbe)", () => {
+  const MINUTA: RegulaLimitu = { limit: 3, oknoS: 60 };
+  const TTL: RegulaLimitu = { limit: 5, oknoS: 900 };
+
+  /** Kolejne próby w podanych chwilach (s); zwraca, które przeszły. */
+  function seria(chwileS: number[], reguly: RegulaLimitu[]) {
+    let trafienia: number[] = [];
+    return chwileS.map((s) => {
+      const ocena = ocenProbe(trafienia, reguly, s * 1000);
+      trafienia = ocena.trafienia;
+      return ocena;
+    });
+  }
+
+  it("przepuszcza dokładnie `limit` prób w oknie, odrzucona próba się nie liczy", () => {
+    const wyniki = seria([0, 1, 2, 3, 4, 5], [MINUTA]);
+    expect(wyniki.map((w) => w.dozwolone)).toEqual([true, true, true, false, false, false]);
+    // Miejsce zwolni się, gdy wypadnie trafienie z chwili 0: 60 s po nim.
+    expect(wyniki[3]!.ponowZaMs).toBe(57_000);
+  });
+
+  it("okno przesuwne, nie stałe: po minucie od pierwszej próby wolno jedną, nie trzy", () => {
+    const wyniki = seria([0, 30, 31, 60, 60.5, 90], [MINUTA]);
+    expect(wyniki.map((w) => w.dozwolone)).toEqual([true, true, true, true, false, true]);
+  });
+
+  it("dwie reguły naraz: długie okno (TTL) ogranicza liczbę trzymanych foteli", () => {
+    // Co 61 s jedna próba: reguła minutowa nigdy nie blokuje, ale po 5 rezerwacjach blokuje okno TTL.
+    const wyniki = seria([0, 61, 122, 183, 244, 305], [MINUTA, TTL]);
+    expect(wyniki.map((w) => w.dozwolone)).toEqual([true, true, true, true, true, false]);
+    expect(wyniki[5]!.ponowZaMs).toBe(900_000 - 305_000);
+  });
+
+  it("pamięta najwyżej max(limit) trafień", () => {
+    const wyniki = seria([0, 1, 2, 3, 4, 5, 6], [{ limit: 2, oknoS: 1 }, TTL]);
+    for (const w of wyniki) expect(w.trafienia.length).toBeLessThanOrEqual(5);
   });
 });

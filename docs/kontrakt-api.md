@@ -19,7 +19,8 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
 | GET | `/api/events` | 200 `SeansNaLiscie[]`, 304 | 503 |
 | GET | `/api/events/:id` | 200 `{ event, takenSeats }`, 304 | 404, 503 |
 | POST | `/api/reservations` | 201 `{ reservationId, expiresAt }` | 400, 404, 409, 413, 422, 429, 503 |
-| POST | `/api/reservations/:id/purchase` | 201 `{ code }` (pierwszy zakup), 200 `{ code }` (powtórka) | 400, 410, 503 |
+| POST | `/api/reservations/:id/purchase` | 201 `{ code }` (pierwszy zakup), 200 `{ code }` (powtórka) | 400, 403, 410, 503 |
+| GET | `/api/zdrowie` (poza kontraktem Etapu I, do monitoringu) | 200 `{ status: "ok" \| "degraded", db: { latencyMs, avgLatencyMs }, loadShedding: { capacity } }` | 503 |
 
 ### GET /api/events
 
@@ -72,17 +73,23 @@ Nagłówki: `Content-Type: application/json` (wymagany), `Idempotency-Key` (zale
 
 | Kod | `error` | Kiedy |
 |---|---|---|
-| 201 | – | `{ reservationId, expiresAt }`. Powtórka z tym samym kluczem zwraca to samo + nagłówek `Idempotent-Replayed: true`. |
+| 201 | – | `{ reservationId, expiresAt }` + ciasteczko z sekretem rezerwacji (niżej). Powtórka z tym samym kluczem zwraca to samo + nagłówek `Idempotent-Replayed: true` i **nowy** sekret (stary przestaje działać). |
 | 400 | `invalid_input` | Zły JSON, brak pól, nieznany fotel, zły `Idempotency-Key`. |
 | 404 | `not_found` | Nie ma takiego seansu. |
 | 409 | `seat_taken` | Fotel zajęty (albo rezerwacja z tym kluczem została już opłacona). |
 | 413 | `payload_too_large` | Ciało > 4 KiB. |
 | 422 | `idempotency_key_reused` | Klucz użyty wcześniej z innym seansem, fotelem albo e-mailem. |
-| 429 | `rate_limited` | Limit żądań na IP lub e-mail (Retry-After = okno limitu). |
+| 429 | `rate_limited` | Limit prób na IP lub e-mail albo limit rezerwacji z jednego IP w czasie TTL. Retry-After = za ile sekund zwolni się miejsce w oknie. |
 | 429 | `too_many_active_reservations` | E-mail ma już maks. liczbę aktywnych rezerwacji (Retry-After = do wygaśnięcia najstarszej). |
 | 503 | `overloaded` / `unavailable` | Przeciążenie (load shedding) albo baza niedostępna/timeout. Bezpieczne do ponowienia z tym samym kluczem. |
 
 Powtórka z tym samym kluczem **po wygaśnięciu** pierwszej rezerwacji jest traktowana jak nowe żądanie (nowa rezerwacja, jeśli fotel wolny).
+
+**Sekret rezerwacji.** `reservationId` widać w adresie strony (`/rezerwacja/:id`, `/bilet/:id`), więc sam nie może
+wystarczać do zakupu ani do zobaczenia kodu biletu. Odpowiedź 201 ustawia ciasteczko
+`kasa_rez=<32 losowe bajty base64url>; Path=/api/reservations/:id; Max-Age=7776000; HttpOnly; Secure; SameSite=Strict`.
+Baza trzyma tylko jego skrót SHA-256 (`seats.secretHash`). Ciasteczko jest ograniczone ścieżką do jednej rezerwacji,
+niewidoczne dla JavaScriptu i nie leci z innych stron.
 
 ### POST /api/reservations/:id/purchase
 
@@ -93,7 +100,8 @@ Bez ciała. Idempotentny przez warunek na stanie:
 | 201 `{ code }` | Pierwszy udany zakup (rezerwacja ważna: `expiresAt > teraz`). |
 | 200 `{ code }` | Bilet już kupiony tą rezerwacją: zwracamy **zapisany** kod (retry, podwójne kliknięcie). |
 | 400 `invalid_input` | `:id` nie jest UUID. |
-| 410 `reservation_expired` | Rezerwacja wygasła albo nigdy nie istniała (celowo ten sam komunikat). |
+| 403 `reservation_forbidden` | Rezerwacja ważna albo kupiona, ale żądanie nie ma pasującego ciasteczka (inna przeglądarka, sam link). Kodu biletu nie zwracamy. |
+| 410 `reservation_expired` | Rezerwacja wygasła albo nigdy nie istniała (celowo ten sam komunikat, także bez ciasteczka). |
 | 503 | Przeciążenie albo baza niedostępna. Bezpieczne do ponowienia. |
 
 Kod biletu: `XXXX-XXXX` z alfabetu Crockforda (bez I, L, O, U), 40 bitów losowości.

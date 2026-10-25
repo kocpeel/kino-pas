@@ -1,0 +1,62 @@
+# Testy przy każdym pushu na feature/main i przy pull requestach.
+# Bez sekretów Cloudflare: wszystko działa lokalnie (workerd + Miniflare, lokalny D1).
+name: Testy
+
+on:
+  push:
+    branches: [feature, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: testy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  szybkie:
+    name: Typy, jednostkowe, integracyjne (workerd + D1), komponenty
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Typy tras Next.js (next-env.d.ts, .next/types) nie są w repozytorium.
+      - run: npx next typegen
+      - run: npm run typecheck
+      - run: npm run lint:wycieki
+      - run: npm run test:unit
+      - run: npm run test:int
+      - run: npm run test:ui
+
+  e2e:
+    name: E2E (Playwright na npm run dev, z kanałem na żywo)
+    needs: szybkie
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      # Wrangler bez pytań o telemetrię.
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e
+      - name: Ślady nieudanych testów
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: test-results/
+          retention-days: 7

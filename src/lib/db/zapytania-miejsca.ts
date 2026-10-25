@@ -15,6 +15,8 @@ export interface ParametryRezerwacji {
   teraz: number;
   /** 0 wyłącza limit aktywnych rezerwacji na e-mail. */
   limitNaEmail: number;
+  /** Skrót sekretu rezerwacji (sam sekret trafia tylko do ciasteczka klienta). */
+  secretHash: string;
 }
 
 // ?6 = teraz. Fotel jest do wzięcia, gdy jest wolny albo jego rezerwacja wygasła (leniwe wygasanie).
@@ -28,6 +30,7 @@ UPDATE seats
        email = ?4,
        idempotencyKey = ?5,
        code = NULL,
+       secretHash = ?10,
        version = version + 1,
        updatedAt = ?6
  WHERE eventId = ?7
@@ -49,11 +52,28 @@ export async function zarezerwujMiejsce(db: D1Database, p: ParametryRezerwacji):
       p.eventId,
       p.seatId,
       p.limitNaEmail,
+      p.secretHash,
     )
     .run();
   return wynik.meta.changes === 1;
 }
 
+/** Nowy sekret dla ważnej rezerwacji (powtórka z tym samym Idempotency-Key unieważnia poprzedni). */
+export async function zmienSekretRezerwacji(
+  db: D1Database,
+  p: { reservationId: string; secretHash: string; teraz: number },
+): Promise<boolean> {
+  const wynik = await db
+    .prepare(
+      `UPDATE seats SET secretHash = ?1, updatedAt = ?3
+        WHERE reservationId = ?2 AND status = 'reserved' AND expiresAt > ?3`,
+    )
+    .bind(p.secretHash, p.reservationId, p.teraz)
+    .run();
+  return wynik.meta.changes === 1;
+}
+
+// Zakup wymaga sekretu rezerwacji (NULL = rezerwacja sprzed wprowadzenia sekretów).
 const SQL_ZAKUP = `
 UPDATE seats
    SET status = 'purchased',
@@ -63,13 +83,14 @@ UPDATE seats
        updatedAt = ?2
  WHERE reservationId = ?3
    AND status = 'reserved'
-   AND expiresAt > ?2`;
+   AND expiresAt > ?2
+   AND (secretHash IS NULL OR secretHash = ?4)`;
 
 export async function kupMiejsce(
   db: D1Database,
-  p: { reservationId: string; code: string; teraz: number },
+  p: { reservationId: string; code: string; teraz: number; secretHash: string | null },
 ): Promise<boolean> {
-  const wynik = await db.prepare(SQL_ZAKUP).bind(p.code, p.teraz, p.reservationId).run();
+  const wynik = await db.prepare(SQL_ZAKUP).bind(p.code, p.teraz, p.reservationId, p.secretHash).run();
   return wynik.meta.changes === 1;
 }
 
@@ -83,6 +104,7 @@ UPDATE seats
        email = NULL,
        idempotencyKey = NULL,
        code = NULL,
+       secretHash = NULL,
        version = version + 1,
        updatedAt = ?1
  WHERE status = 'reserved'
@@ -90,6 +112,26 @@ UPDATE seats
 
 export async function zwolnijWygasleRezerwacje(db: D1Database, teraz: number): Promise<number> {
   const wynik = await db.prepare(SQL_SPRZATANIE).bind(teraz).run();
+  return wynik.meta.changes;
+}
+
+// Retencja danych osobowych: po seansie (z zapasem na reklamacje) kupione miejsca tracą imię, e-mail,
+// skrót sekretu i klucz idempotencji. Zostają status i kod biletu (nie są danymi osobowymi), więc
+// sala i rozliczenia się nie zmieniają. `version`/`updatedAt` bez zmian: stan sali jest ten sam.
+// `startsAt` to ISO 8601, porównujemy jako czas, nie jako tekst.
+const SQL_RETENCJA = `
+UPDATE seats
+   SET customerName = NULL,
+       email = NULL,
+       secretHash = NULL,
+       idempotencyKey = NULL
+ WHERE status = 'purchased'
+   AND (customerName IS NOT NULL OR email IS NOT NULL OR secretHash IS NOT NULL OR idempotencyKey IS NOT NULL)
+   AND eventId IN (SELECT id FROM events WHERE CAST(strftime('%s', startsAt) AS INTEGER) * 1000 <= ?1)`;
+
+/** Anonimizuje kupione miejsca seansów, które zaczęły się najpóźniej w chwili `granica` (epoch ms). */
+export async function anonimizujPoSeansach(db: D1Database, granica: number): Promise<number> {
+  const wynik = await db.prepare(SQL_RETENCJA).bind(granica).run();
   return wynik.meta.changes;
 }
 
@@ -147,11 +189,12 @@ export interface WierszPoRezerwacji {
   status: StatusMiejsca;
   code: string | null;
   expiresAt: number | null;
+  secretHash: string | null;
 }
 
 export async function znajdzPoRezerwacji(db: D1Database, reservationId: string): Promise<WierszPoRezerwacji | null> {
   return db
-    .prepare(`SELECT status, code, expiresAt FROM seats WHERE reservationId = ?1`)
+    .prepare(`SELECT status, code, expiresAt, secretHash FROM seats WHERE reservationId = ?1`)
     .bind(reservationId)
     .first<WierszPoRezerwacji>();
 }
