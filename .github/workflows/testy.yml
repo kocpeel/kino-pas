@@ -55,10 +55,12 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - name: npm run test:e2e
         shell: bash # z pipefail: porażka testów nie ginie w `tee`
+        # Limit kroku (nie całego joba): po nim krok jest porażką, więc kroki diagnostyczne niżej się wykonają.
+        timeout-minutes: 15
         run: npm run test:e2e 2>&1 | tee e2e.log
       # Logi jobów widać tylko po zalogowaniu, a adnotacje są publiczne: końcówka logu i linie z błędami.
       - name: Przyczyna porażki w adnotacjach
-        if: failure()
+        if: failure() || cancelled()
         shell: bash
         run: |
           # Bez kolorów ANSI, `%` zakodowane, puste linie pominięte, nowe linie jako %0A (format adnotacji).
@@ -68,9 +70,11 @@ jobs:
           echo "::error title=E2E: linie z błędami::${bledy:-brak}"
           echo "::error title=E2E: koniec logu::${koniec:-pusty log}"
       - name: Ślady nieudanych testów
-        if: failure()
+        if: failure() || cancelled()
         uses: actions/upload-artifact@v4
         with:
           name: playwright-test-results
-          path: test-results/
+          path: |
+            test-results/
+            e2e.log
           retention-days: 7

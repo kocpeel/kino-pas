@@ -17,6 +17,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   retries: process.env.CI ? 1 : 0,
+  // W CI cały przebieg ma twardy limit: lepiej raport z tym, co wisi, niż przerwany job bez logów.
+  ...(process.env.CI ? { globalTimeout: 12 * 60_000 } : {}),
   reporter: [["list"]],
   globalSetup: "./tests/e2e/rozgrzewka.ts",
   use: {
