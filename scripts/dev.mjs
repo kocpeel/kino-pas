@@ -38,24 +38,48 @@ function uruchom(nazwa, polecenie, { prefiks = true } = {}) {
   procesy.push(proces);
 }
 
-function zabij(proces) {
-  if (proces.exitCode !== null || proces.pid === undefined) return;
-  if (naWindows) {
-    spawn("taskkill", ["/pid", String(proces.pid), "/T", "/F"], { stdio: "ignore" });
-  } else {
-    try {
-      process.kill(-proces.pid, "SIGTERM");
-    } catch {
-      proces.kill("SIGTERM");
-    }
+/** Czy w grupie procesów dziecka (Linux/macOS) został jeszcze jakiś proces. */
+function grupaZyje(proces) {
+  try {
+    process.kill(-proces.pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
+
+function zabij(proces, sygnal) {
+  if (proces.pid === undefined) return;
+  if (naWindows) {
+    if (proces.exitCode === null) spawn("taskkill", ["/pid", String(proces.pid), "/T", "/F"], { stdio: "ignore" });
+    return;
+  }
+  // Cała grupa, nie tylko lider: `next dev` i workerd to wnuki, które przeżyłyby zabicie samej powłoki
+  // i trzymały otwarte stdout (Playwright czekałby wtedy na zamknięcie serwera w nieskończoność).
+  try {
+    process.kill(-proces.pid, sygnal);
+  } catch {}
+}
+
+const LIMIT_ZAMYKANIA_MS = 5000;
 
 function zakoncz(kod = 0) {
   if (konczenie) return;
   konczenie = true;
-  procesy.forEach(zabij);
-  setTimeout(() => process.exit(kod), 500);
+  procesy.forEach((p) => zabij(p, "SIGTERM"));
+  if (naWindows) {
+    setTimeout(() => process.exit(kod), 500);
+    return;
+  }
+  // Wychodzimy dopiero, gdy grupy dzieci są puste; kto nie zamknie się sam, po 5 s dostaje SIGKILL.
+  const start = Date.now();
+  const sprawdz = setInterval(() => {
+    const zywe = procesy.filter(grupaZyje);
+    if (zywe.length > 0 && Date.now() - start < LIMIT_ZAMYKANIA_MS) return;
+    zywe.forEach((p) => zabij(p, "SIGKILL"));
+    clearInterval(sprawdz);
+    process.exit(kod);
+  }, 100);
 }
 
 process.on("SIGINT", () => zakoncz(0));

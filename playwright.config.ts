@@ -31,6 +31,10 @@ export default defineConfig({
   projects: [{ name: "desktop", use: { ...devices["Desktop Chrome"], ...(kanal ? { channel: kanal } : {}) } }],
   webServer: {
     command: "node scripts/e2e-serwer.mjs",
+    // Domyślnie Playwright zabija grupę procesów SIGKILL-em: scripts/dev.mjs nie zdążyłby zamknąć `next dev`
+    // i Workera sali (osobne grupy), a ich otwarte stdout blokowało zamknięcie serwera (zawieszenie w CI na Linuksie).
+    // SIGTERM pozwala posprzątać; na Windows ta opcja jest ignorowana (tam Playwright zabija całe drzewo).
+    gracefulShutdown: { signal: "SIGTERM", timeout: 15_000 },
     url: `http://localhost:${PORT}/api/events`,
     reuseExistingServer: !process.env.CI,
     timeout: 180_000,
