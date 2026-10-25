@@ -1,0 +1,80 @@
+# Testy przy każdym pushu na feature/main i przy pull requestach.
+# Bez sekretów Cloudflare: wszystko działa lokalnie (workerd + Miniflare, lokalny D1).
+name: Testy
+
+on:
+  push:
+    branches: [feature, main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: testy-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  szybkie:
+    name: Typy, jednostkowe, integracyjne (workerd + D1), komponenty
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # Typy tras Next.js (next-env.d.ts, .next/types) nie są w repozytorium.
+      - run: npx next typegen
+      - run: npm run typecheck
+      - run: npm run lint:wycieki
+      - run: npm run test:unit
+      - run: npm run test:int
+      - run: npm run test:ui
+
+  e2e:
+    name: E2E (Playwright na npm run dev, z kanałem na żywo)
+    needs: szybkie
+    # Przypięte: Playwright oficjalnie wspiera 24.04, a ubuntu-latest przechodzi na nowsze wydanie.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      CI: "true"
+      # Wrangler bez pytań o telemetrię.
+      WRANGLER_SEND_METRICS: "false"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx playwright install --with-deps chromium
+      - name: npm run test:e2e
+        shell: bash # z pipefail: porażka testów nie ginie w `tee`
+        # Limit kroku (nie całego joba): po nim krok jest porażką, więc kroki diagnostyczne niżej się wykonają.
+        timeout-minutes: 15
+        run: npm run test:e2e 2>&1 | tee e2e.log
+      # Logi jobów widać tylko po zalogowaniu, a adnotacje są publiczne: końcówka logu i linie z błędami.
+      - name: Przyczyna porażki w adnotacjach
+        if: failure() || cancelled()
+        shell: bash
+        run: |
+          # Bez kolorów ANSI, `%` zakodowane, puste linie pominięte, nowe linie jako %0A (format adnotacji).
+          adnotacja() { sed -e 's/\x1b\[[0-9;]*m//g' -e 's/%/%25/g' -e 's/\r//g' | awk 'NF { printf "%s%s", (n++ ? "%0A" : ""), $0 }'; }
+          bledy=$(grep -iE "error|fail|exited|timed out|cannot|refused|not found" e2e.log | grep -v "no such Durable Object class" | tail -n 25 | adnotacja || true)
+          koniec=$(grep -v "no such Durable Object class" e2e.log | tail -n 40 | adnotacja || true)
+          echo "::error title=E2E: linie z błędami::${bledy:-brak}"
+          echo "::error title=E2E: koniec logu::${koniec:-pusty log}"
+      - name: Ślady nieudanych testów
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-test-results
+          path: |
+            test-results/
+            e2e.log
+          retention-days: 7

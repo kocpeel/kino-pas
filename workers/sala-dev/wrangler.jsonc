@@ -1,0 +1,45 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  // Worker sali TYLKO do `npm run dev` (uruchamia go scripts/dev.mjs). Nie wdrażać.
+  // Ta sama lokalna baza D1 co `next dev`: to samo database_id + --persist-to .wrangler/state.
+  "name": "kasa-kino-sala-dev",
+  "main": "index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": false,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "kasa-kino-db",
+      "database_id": "c8b109e6-db72-4b43-bcb8-be3264c1f2e6",
+      "migrations_dir": "../../migrations"
+    }
+  ],
+  "durable_objects": { "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] }],
+  "ratelimits": [{ "name": "RL_KANAL_IP", "namespace_id": "4301", "simple": { "limit": 600, "period": 60 } }],
+  "vars": {
+    // Strony, które mogą się łączyć z kanałem (Next.js w dev działa na innym porcie).
+    "DOZWOLONE_ZRODLA": "http://localhost:3000,http://127.0.0.1:3000"
+  },
+  "env": {
+    // Testy e2e: baza środowiska e2e i strona na porcie 3100.
+    "e2e": {
+      "name": "kasa-kino-sala-dev-e2e",
+      "workers_dev": false,
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "kasa-kino-db-e2e",
+          "database_id": "00000000-0000-4000-8000-0000000000e2",
+          "migrations_dir": "../../migrations"
+        }
+      ],
+      "durable_objects": { "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }] },
+      "ratelimits": [{ "name": "RL_KANAL_IP", "namespace_id": "4302", "simple": { "limit": 1000, "period": 60 } }],
+      "vars": {
+        "DOZWOLONE_ZRODLA": "http://localhost:3100,http://127.0.0.1:3100"
+      }
+    }
+  }
+}

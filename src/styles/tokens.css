@@ -1,0 +1,71 @@
+/* Tokeny motywu. Zmiana motywu = zmiana wartości tylko tutaj. */
+:root {
+  color-scheme: dark;
+
+  /* tła */
+  --kolor-tlo: #0d1220;
+  --kolor-powierzchnia: #151c2e;
+  --kolor-powierzchnia-2: #1d263d;
+  --kolor-powierzchnia-3: #26314d;
+  --kolor-obramowanie: #2c3854;
+  --kolor-obramowanie-mocne: #44527a;
+
+  /* tekst (kontrast ≥ AA na --kolor-tlo i --kolor-powierzchnia) */
+  --kolor-tekst: #edf0f7;
+  --kolor-tekst-cichy: #a3adc2;
+  --kolor-tekst-na-akcencie: #1b1203;
+
+  /* jeden akcent: bursztyn */
+  --kolor-akcent: #f4b041;
+  --kolor-akcent-mocny: #ffc566;
+  --kolor-akcent-tlo: rgba(244, 176, 65, 0.14);
+
+  /* stany */
+  --kolor-sukces: #5fd39a;
+  --kolor-ostrzezenie: #ffb454;
+  --kolor-blad: #ff7a7a;
+  --kolor-info: #8ab4ff;
+  --kolor-sukces-tlo: rgba(95, 211, 154, 0.12);
+  --kolor-ostrzezenie-tlo: rgba(255, 180, 84, 0.13);
+  --kolor-blad-tlo: rgba(255, 122, 122, 0.13);
+  --kolor-info-tlo: rgba(138, 180, 255, 0.12);
+
+  /* fotele */
+  --fotel-wolny: #2f3b5c;
+  --fotel-wolny-hover: #3d4b73;
+  --fotel-zajety: #1a2133;
+  --fotel-zajety-znak: #5d6888;
+  --fotel-wybrany: var(--kolor-akcent);
+
+  /* fokus */
+  --fokus: 0 0 0 3px var(--kolor-tlo), 0 0 0 5px var(--kolor-akcent-mocny);
+
+  /* odstępy */
+  --odstep-1: 0.25rem;
+  --odstep-2: 0.5rem;
+  --odstep-3: 0.75rem;
+  --odstep-4: 1rem;
+  --odstep-5: 1.5rem;
+  --odstep-6: 2rem;
+  --odstep-7: 3rem;
+
+  /* typografia */
+  --font-tekst: var(--font-inter), system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", "Cascadia Mono", Consolas, "Liberation Mono", monospace;
+  --rozmiar-xs: 0.8125rem;
+  --rozmiar-s: 0.875rem;
+  --rozmiar-m: 1rem;
+  --rozmiar-l: 1.25rem;
+  --rozmiar-xl: 1.625rem;
+  --rozmiar-xxl: 2.25rem;
+
+  /* kształty */
+  --promien-s: 6px;
+  --promien-m: 10px;
+  --promien-l: 16px;
+  --cien: 0 10px 30px rgba(0, 0, 0, 0.35);
+
+  /* układ */
+  --szerokosc-tresci: 960px;
+  --margines-boczny: 16px;
+}
