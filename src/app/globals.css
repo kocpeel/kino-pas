@@ -126,13 +126,6 @@ a {
   padding-bottom: var(--odstep-7);
 }
 
-.stopka {
-  border-top: 1px solid var(--kolor-obramowanie);
-  color: var(--kolor-tekst-cichy);
-  font-size: var(--rozmiar-xs);
-  padding: var(--odstep-4) 0;
-}
-
 .banery {
   display: grid;
   gap: var(--odstep-2);
@@ -991,7 +984,6 @@ a {
   }
 
   .naglowek,
-  .stopka,
   .kroki,
   .banery,
   .bilet__akcje,

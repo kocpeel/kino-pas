@@ -44,9 +44,6 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             {children}
           </div>
         </main>
-        <footer className="stopka">
-          <div className="kontener">Kino Pas · Etap I: rezerwacja i zakup biletu (płatności w kolejnym etapie)</div>
-        </footer>
       </body>
     </html>
   );
