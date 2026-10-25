@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { fotel, seanse, unikalnyEmail, wolnyFotel, wypelnijIRezerwuj } from "./pomocnicze";
+import { fotel, seanse, wolnyFotel, wypelnijIRezerwuj } from "./pomocnicze";
 
 test("1. pełna ścieżka: seans → fotel → formularz → licznik → bilet", async ({ page, request }) => {
   const [seans] = await seanse(request);
@@ -42,7 +42,7 @@ test("2. wygaśnięcie: po TTL komunikat, a mapa znów pokazuje fotel jako wolny
   await expect(fotel(page, seatId)).toHaveAccessibleName(/wolne$/);
 });
 
-test("3. dwie sesje wybierają ten sam fotel: druga dostaje komunikat i odświeżoną mapę", async ({ browser, request }) => {
+test("3. dwie sesje wybierają ten sam fotel: druga od razu dostaje komunikat i wraca na odświeżoną mapę", async ({ browser, request }) => {
   const [seans] = await seanse(request);
   const seatId = await wolnyFotel(request, seans!.id);
   const [pierwsza, druga] = await Promise.all([browser.newContext(), browser.newContext()]);
@@ -55,8 +55,11 @@ test("3. dwie sesje wybierają ten sam fotel: druga dostaje komunikat i odświe�
   await wypelnijIRezerwuj(a);
   await expect(a.getByRole("timer")).toBeVisible();
 
-  await wypelnijIRezerwuj(b, "Druga Osoba", unikalnyEmail());
-  await expect(b.locator(".baner[role=alert]")).toContainText("Ten fotel został właśnie zajęty");
+  // B nie musi niczego wysyłać: formularz dostaje zmianę na żywo i blokuje przycisk.
+  // (Gdy kanału nie ma, B dowie się przy wysyłce: 409; to pokrywają testy komponentu.)
+  await b.getByLabel("Imię").fill("Druga Osoba");
+  await expect(b.locator(".baner[role=alert]")).toContainText("Ten fotel właśnie zajął ktoś inny");
+  await expect(b.getByRole("button", { name: "Zarezerwuj fotel" })).toBeDisabled();
   await b.getByRole("link", { name: "Wróć do mapy" }).click();
   await expect(b.locator(".baner[role=alert]")).toContainText("Ten fotel został właśnie zajęty");
   await expect(fotel(b, seatId)).toHaveClass(/fotel--zajety/);

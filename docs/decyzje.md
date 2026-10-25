@@ -95,6 +95,10 @@ WebSocket wszystkich oglądających mapę tej sali:
    pośredników) dostaje automatyczne „pong" bez budzenia obiektu.
 
 Zakup nie zmienia zbioru zajętych foteli (rezerwacja → zakup), więc nie powiadamia sali. Awaria kanału nie psuje rezerwacji.
+Formularz rezerwacji słucha tego samego kanału: gdy ktoś inny zarezerwuje „jego" fotel, od razu pokazuje
+„Ten fotel właśnie zajął ktoś inny", blokuje wysyłkę i daje „Wróć do mapy", a po zwolnieniu fotela sam się odblokowuje.
+Własna rezerwacja nie jest brana za cudzą: serwer potrafi rozesłać zmianę przed odpowiedzią na nasze żądanie,
+a po timeoucie nie wiadomo, czy zapis się udał, więc w obu przypadkach formularz tego nie ogłasza.
 **Push w `npm run dev`.** `next dev` działa w Node.js i nie uruchamia `worker.ts`: nie zna trasy WebSocket, a emulacja
 bindingów nie odpala klasy Durable Objectu zdefiniowanej w tym samym Workerze. Dlatego `npm run dev` (`scripts/dev.mjs`)
 uruchamia obok `next dev` mały Worker deweloperski `workers/sala-dev` w workerd: ta sama klasa `SalaSeansu`, ta sama lokalna
