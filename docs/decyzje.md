@@ -99,6 +99,21 @@ Formularz rezerwacji słucha tego samego kanału: gdy ktoś inny zarezerwuje „
 „Ten fotel właśnie zajął ktoś inny", blokuje wysyłkę i daje „Wróć do mapy", a po zwolnieniu fotela sam się odblokowuje.
 Własna rezerwacja nie jest brana za cudzą: serwer potrafi rozesłać zmianę przed odpowiedzią na nasze żądanie,
 a po timeoucie nie wiadomo, czy zapis się udał, więc w obu przypadkach formularz tego nie ogłasza.
+
+**Zabezpieczenia kanału** (domknięte po przeglądzie wydajności):
+
+| Problem | Rozwiązanie |
+|---|---|
+| Zgubione powiadomienie = mapa nieaktualna aż do następnej zmiany (np. zapis udany, ale odpowiedź po timeoucie: 503 bez powiadomienia, a powtórka też nie powiadamiała). | Serwer powiadamia salę także przy powtórce i przy błędzie zapisu (`NIEDOSTEPNE`); sala porównuje ETag i nie wysyła niczego, gdy stan się nie zmienił. Klient przy działającym kanale co 60 s robi kontrolne `GET` z ETagiem najnowszego stanu (zwykle 304); odpowiedź na zapytanie wysłane przed nowszą wiadomością z kanału jej nie nadpisze. |
+| Kanał nie pauzował na ukrytej karcie (plan: odświeżanie „wstrzymywane, gdy karta jest ukryta"). | Po 60 s w tle kanał jest usypiany (zamknięte połączenie, zero timerów), po powrocie łączy się od nowa i dostaje świeży stan. Krótkie przełączenie karty niczego nie zrywa. Połączenie, które nie otworzy się w 10 s, liczy się jako nieudane (włącza zapasowe odpytywanie zamiast wisieć). |
+| Nowe połączenia bez limitu i load sheddingu; każde to 2 odczyty D1. | Ścisły limit **równoczesnych** połączeń z jednego IP w samej sali (znaczniki połączeń, `MAX_POLACZEN_Z_IP = 10`, 429 + Retry-After) plus zgrubny binding `RL_KANAL_IP` na nowe połączenia. Load shedding: nowe połączenia mają najniższy priorytet (`kanal`, odpadają od połowy puli odczytów). Sala czyta stan i najbliższe wygaśnięcie jednym zapytaniem zbiorczym, a nowe połączenia w ciągu 1 s dostają stan z pamięci (fala ponownych połączeń = jeden odczyt). |
+
+Uwaga o bindingu Rate Limiting: Cloudflare liczy w nim w przybliżeniu (lokalny licznik w każdej instancji, synchronizacja
+w tle; dokumentacja: *„Requests can exceed your configured limit"*, a do ścisłych limitów zaleca Durable Objects).
+Na produkcji 120 połączeń z jednego IP w ciągu ok. 2 minut przeszło mimo limitu 60/min, dlatego ścisły limit połączeń jest w sali.
+To samo dotyczy limitu rezerwacji na IP/e-mail (zmierzone: 14 rezerwacji z jednego IP mimo limitu 10/min) — tam ścisłą
+granicą pozostaje limit aktywnych rezerwacji na e-mail w zapytaniu SQL.
+
 **Push w `npm run dev`.** `next dev` działa w Node.js i nie uruchamia `worker.ts`: nie zna trasy WebSocket, a emulacja
 bindingów nie odpala klasy Durable Objectu zdefiniowanej w tym samym Workerze. Dlatego `npm run dev` (`scripts/dev.mjs`)
 uruchamia obok `next dev` mały Worker deweloperski `workers/sala-dev` w workerd: ta sama klasa `SalaSeansu`, ta sama lokalna

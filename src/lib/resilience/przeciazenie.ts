@@ -3,7 +3,9 @@
 // Dwie osobne pule żądań w toku: odczyty (lista, mapa) i zapisy (rezerwacja, zakup),
 // więc tłum oglądający mapę nie zajmie miejsca zakupom. W puli zapisów 25% pojemności
 // jest zarezerwowane dla zakupów. Lista jest odrzucana pierwsza: także wtedy, gdy zapisy
-// są mocno obciążone (wspólna baza). Priorytet: zakup > rezerwacja > szczegóły > lista.
+// są mocno obciążone (wspólna baza). Priorytet: zakup > rezerwacja > szczegóły > lista > kanał.
+// Nowe połączenia kanału na żywo odpadają najwcześniej (od połowy puli odczytów), bo mapa
+// ma zapasowe odpytywanie, a każde połączenie to odczyt bazy w Durable Objekcie sali.
 //
 // Liczniki są per izolat Workera (przybliżenie obciążenia, nie globalny licznik),
 // to tylko dwie liczby, więc stan nie rośnie. Przeciążenie samej bazy D1 rozpoznaje
@@ -11,7 +13,7 @@
 
 import { BladDomenowy } from "../domain/bledy";
 
-export type Priorytet = "lista" | "szczegoly" | "rezerwacja" | "zakup";
+export type Priorytet = "kanal" | "lista" | "szczegoly" | "rezerwacja" | "zakup";
 
 export interface LimityPrzeciazenia {
   maxOdczytow: number;
@@ -19,6 +21,7 @@ export interface LimityPrzeciazenia {
 }
 
 const UDZIAL_DLA_NIZSZYCH = 0.75;
+const UDZIAL_DLA_KANALU = 0.5;
 
 export class StraznikPrzeciazenia {
   private odczytyWToku = 0;
@@ -46,6 +49,11 @@ export class StraznikPrzeciazenia {
       case "lista":
         return (
           this.odczytyWToku < Math.max(1, Math.floor(maxOdczytow * UDZIAL_DLA_NIZSZYCH)) &&
+          this.zapisyWToku < Math.max(1, Math.floor(maxZapisow * UDZIAL_DLA_NIZSZYCH))
+        );
+      case "kanal":
+        return (
+          this.odczytyWToku < Math.max(1, Math.floor(maxOdczytow * UDZIAL_DLA_KANALU)) &&
           this.zapisyWToku < Math.max(1, Math.floor(maxZapisow * UDZIAL_DLA_NIZSZYCH))
         );
     }

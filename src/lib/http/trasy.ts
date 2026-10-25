@@ -2,7 +2,7 @@
 // Route handlery Next.js w `src/app/api` tylko je wywołują z zależnościami żądania,
 // a testy integracyjne wołają je bezpośrednio z prawdziwym D1.
 
-import { BladDomenowy } from "../domain/bledy";
+import { BladDomenowy, czyBladDomenowy } from "../domain/bledy";
 import { czyPoprawneIdRezerwacji, kupBilet, zarezerwuj } from "../domain/rezerwacja";
 import { adresKlienta, sprawdzLimityRezerwacji } from "../resilience/limit-zapytan";
 import { obsluzTrase, wPuli, type DostawcaZaleznosci } from "./obsluga-trasy";
@@ -43,18 +43,26 @@ export function obsluzRezerwacje(zadanie: Request, dostawca: DostawcaZaleznosci)
       z.konfiguracja.okresLimituS,
     );
     const teraz = z.zegar.teraz();
-    const wynik = await wPuli(z, "rezerwacja", (db) =>
-      zarezerwuj(db, wejscie, {
-        teraz,
-        ttlMs: z.konfiguracja.ttlMs,
-        limitNaEmail: z.konfiguracja.limitAktywnychNaEmail,
-      }),
-    );
-    if (!wynik.powtorka) {
-      uniewaznijPoZapisie(z, wejscie.eventId);
-      // Oglądający mapę tej sali dostaną nowy stan przez WebSocket. Zakup nie zmienia zajętych foteli.
-      z.powiadomSale?.(wejscie.eventId);
+    let wynik: Awaited<ReturnType<typeof zarezerwuj>>;
+    try {
+      wynik = await wPuli(z, "rezerwacja", (db) =>
+        zarezerwuj(db, wejscie, {
+          teraz,
+          ttlMs: z.konfiguracja.ttlMs,
+          limitNaEmail: z.konfiguracja.limitAktywnychNaEmail,
+        }),
+      );
+    } catch (blad) {
+      // Timeout albo awaria bazy w trakcie zapisu: rezerwacja MOGŁA powstać (D1 nie da się anulować).
+      // Sala sama odczyta stan z bazy; jeśli nic się nie zmieniło, nikomu nic nie wyśle.
+      if (czyBladDomenowy(blad) && blad.rodzaj === "NIEDOSTEPNE") z.powiadomSale?.(wejscie.eventId);
+      throw blad;
     }
+    // Także przy powtórce: pierwsza próba mogła skończyć się timeoutem po udanym zapisie,
+    // więc ta jest pierwszą okazją, żeby oglądający się o rezerwacji dowiedzieli.
+    // Zakup nie zmienia zbioru zajętych foteli, więc tam powiadomienie nie jest potrzebne.
+    uniewaznijPoZapisie(z, wejscie.eventId);
+    z.powiadomSale?.(wejscie.eventId);
     return json(wynik.rezerwacja, 201, wynik.powtorka ? { "Idempotent-Replayed": "true" } : {});
   });
 }

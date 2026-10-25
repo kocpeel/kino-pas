@@ -17,6 +17,7 @@
   ],
   "durable_objects": { "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] }],
+  "ratelimits": [{ "name": "RL_KANAL_IP", "namespace_id": "4301", "simple": { "limit": 600, "period": 60 } }],
   "vars": {
     // Strony, które mogą się łączyć z kanałem (Next.js w dev działa na innym porcie).
     "DOZWOLONE_ZRODLA": "http://localhost:3000,http://127.0.0.1:3000"
@@ -35,6 +36,7 @@
         }
       ],
       "durable_objects": { "bindings": [{ "name": "SALE", "class_name": "SalaSeansu" }] },
+      "ratelimits": [{ "name": "RL_KANAL_IP", "namespace_id": "4302", "simple": { "limit": 1000, "period": 60 } }],
       "vars": {
         "DOZWOLONE_ZRODLA": "http://localhost:3100,http://127.0.0.1:3100"
       }

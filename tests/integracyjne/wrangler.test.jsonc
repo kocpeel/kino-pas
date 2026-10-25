@@ -9,7 +9,8 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] }],
   "ratelimits": [
     { "name": "RL_REZERWACJE_IP", "namespace_id": "9001", "simple": { "limit": 3, "period": 60 } },
-    { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "9002", "simple": { "limit": 3, "period": 60 } }
+    { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "9002", "simple": { "limit": 3, "period": 60 } },
+    { "name": "RL_KANAL_IP", "namespace_id": "9003", "simple": { "limit": 3, "period": 60 } }
   ],
   "vars": {
     "RESERVATION_TTL_SECONDS": "120",

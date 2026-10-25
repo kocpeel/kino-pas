@@ -6,7 +6,7 @@
 // Kliknięcie wolnego fotela tylko przenosi do formularza: samo w sobie niczego nie rezerwuje.
 
 import { useRouter } from "next/navigation";
-import { useCallback, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { useNaZywo } from "@/hooks/useNaZywo";
 import { usePolling } from "@/hooks/usePolling";
 import { usePoPrzywroceniu } from "@/hooks/usePrzywroconyRender";
@@ -24,6 +24,17 @@ import { Legenda } from "./Legenda";
 export const INTERWAL_ODSWIEZANIA_MS = 5000;
 /** Najrzadsze odświeżanie, gdy kolejne odpowiedzi nic nie zmieniają (304). */
 export const MAX_INTERWAL_ODSWIEZANIA_MS = 30_000;
+/**
+ * Przy działającym kanale: kontrolne sprawdzenie z ETagiem ostatniego stanu (zwykle 304 bez treści).
+ * Wyłapuje zmianę, o której sala nie została powiadomiona.
+ */
+export const KONTROLA_PRZY_KANALE_MS = 60_000;
+
+interface Odczyt {
+  wersja: Wersja<SzczegolySeansu>;
+  /** Kiedy dane były aktualne: przyjście wiadomości z kanału albo WYSŁANIE zapytania. */
+  kiedy: number;
+}
 
 interface Props {
   eventId: string;
@@ -59,7 +70,7 @@ export function MapaSali({
   usePoPrzywroceniu(`mapa:${eventId}`, wyrenderowano, () => ustawPierwszeZaMs(0));
 
   // Kanał na żywo: serwer przysyła pełny stan sali po każdej zmianie.
-  const [zKanalu, ustawZKanalu] = useState<{ wersja: Wersja<SzczegolySeansu>; kiedy: number } | null>(null);
+  const [zKanalu, ustawZKanalu] = useState<Odczyt | null>(null);
   const naWiadomosc = useCallback((wiadomosc: unknown) => {
     if (czyWiadomoscStanu(wiadomosc)) {
       ustawZKanalu({ wersja: { dane: wiadomosc.dane, etag: wiadomosc.etag }, kiedy: Date.now() });
@@ -67,32 +78,39 @@ export function MapaSali({
   }, []);
   const naZywo = useNaZywo(adresKanalu === undefined ? sciezkaNaZywo(eventId) : adresKanalu, naWiadomosc);
   const kanalDziala = naZywo.stan === "na-zywo";
+  const zapasowy = naZywo.trybZapasowy;
 
+  // Sprawdzenia niosą ETag NAJNOWSZEGO znanego stanu (także z kanału), więc zwykle kończą się 304.
+  const najnowszaRef = useRef<Wersja<SzczegolySeansu> | undefined>(undefined);
   const pobierz = useCallback(
-    (sygnal: AbortSignal, poprzednia: Wersja<SzczegolySeansu> | undefined) =>
-      pobierzSzczegolySeansu(eventId, { sygnal, proby: 1, poprzednia }),
+    async (sygnal: AbortSignal, poprzedni: Odczyt | undefined): Promise<Odczyt> => {
+      const kiedy = Date.now();
+      const poprzednia = najnowszaRef.current ?? poprzedni?.wersja;
+      return { wersja: await pobierzSzczegolySeansu(eventId, { sygnal, proby: 1, poprzednia }), kiedy };
+    },
     [eventId],
   );
   const polling = usePolling(pobierz, {
-    // Odpytujemy tylko, gdy kanał na żywo nie działa; po jego zerwaniu od razu.
-    wlaczony: !kanalDziala,
-    interwalMs: INTERWAL_ODSWIEZANIA_MS,
-    maxInterwalMs: MAX_INTERWAL_ODSWIEZANIA_MS,
-    pierwszeZaMs: naZywo.bylPolaczony ? 0 : pierwszeZaMs,
+    // Bez kanału: zwykłe odpytywanie zapasowe (po zerwaniu kanału od razu).
+    // Z kanałem (albo w trakcie pierwszego łączenia): tylko rzadka kontrola.
+    interwalMs: zapasowy ? INTERWAL_ODSWIEZANIA_MS : KONTROLA_PRZY_KANALE_MS,
+    maxInterwalMs: zapasowy ? MAX_INTERWAL_ODSWIEZANIA_MS : KONTROLA_PRZY_KANALE_MS,
+    pierwszeZaMs: zapasowy ? (naZywo.bylPolaczony ? 0 : pierwszeZaMs) : KONTROLA_PRZY_KANALE_MS,
     maxPorazek: 4,
     // 304 zwraca ten sam obiekt, więc „bez zmian" = ta sama referencja.
-    czyZmiana: (poprzednia, nowa) => poprzednia !== nowa,
+    czyZmiana: (poprzedni, nowy) => poprzedni?.wersja !== nowy.wersja,
   });
 
-  // Najnowszy stan z dwóch źródeł (kanał albo odpytywanie).
+  // Najnowszy stan z dwóch źródeł (kanał albo odpytywanie). Liczy się chwila, w której dane były
+  // aktualne: odpowiedź na zapytanie wysłane PRZED wiadomością z kanału nie nadpisze nowszego stanu.
   const aktualne = useMemo(() => {
-    const zPollingu =
-      polling.dane && polling.ostatniaAktualizacja !== null
-        ? { wersja: polling.dane, kiedy: polling.ostatniaAktualizacja }
-        : null;
+    const zPollingu = polling.dane ?? null;
     if (!zKanalu || !zPollingu) return zKanalu ?? zPollingu;
     return zKanalu.kiedy >= zPollingu.kiedy ? zKanalu : zPollingu;
-  }, [zKanalu, polling.dane, polling.ostatniaAktualizacja]);
+  }, [zKanalu, polling.dane]);
+  useEffect(() => {
+    najnowszaRef.current = aktualne?.wersja;
+  }, [aktualne]);
 
   // Zestaw jest podmieniany przy każdej odpowiedzi, nigdy rozszerzany.
   const zajete = useMemo(() => {
@@ -239,7 +257,7 @@ export function MapaSali({
         <span className="cyfry">wolne {numery.length * literyRzedow.length - zajete.size}</span>
       </div>
 
-      {polling.blad && !kanalDziala ? (
+      {polling.blad && zapasowy ? (
         <div className="banery" style={{ marginTop: "var(--odstep-4)" }}>
           <Baner
             rodzaj={polling.zatrzymany ? "blad" : "info"}

@@ -15,7 +15,9 @@ export default {
     const { pathname } = new URL(zadanie.url);
     const metoda = zadanie.method;
     let m: RegExpMatchArray | null;
-    if ((m = WZOR_SCIEZKI_NA_ZYWO.exec(pathname))) return polaczZSala(zadanie, env.SALE, decodeURIComponent(m[1] as string));
+    if ((m = WZOR_SCIEZKI_NA_ZYWO.exec(pathname))) {
+      return polaczZSala(zadanie, env.SALE, decodeURIComponent(m[1] as string), { limiter: env.RL_KANAL_IP, okresLimituS: 60 });
+    }
     if (metoda === "GET" && pathname === "/api/events") return obsluzListeSeansow(zadanie, dostawca);
     if (metoda === "GET" && (m = pathname.match(/^\/api\/events\/([^/]+)$/))) {
       return obsluzSzczegolySeansu(zadanie, dostawca, decodeURIComponent(m[1] as string));

@@ -42,16 +42,28 @@ export async function szczegolySeansu(db: D1Database, eventId: string, teraz: nu
   return { event, takenSeats };
 }
 
-/** Najbliższa chwila, w której któraś ważna rezerwacja seansu wygaśnie (null = brak takich). */
-export async function najblizszeWygasniecie(db: D1Database, eventId: string, teraz: number): Promise<number | null> {
-  const wiersz = await db
-    .prepare(
-      `SELECT MIN(expiresAt) AS kiedy FROM seats
-        WHERE eventId = ?1 AND status = 'reserved' AND expiresAt > ?2`,
-    )
-    .bind(eventId, teraz)
-    .first<{ kiedy: number | null }>();
-  return wiersz?.kiedy ?? null;
+const SQL_NAJBLIZSZE_WYGASNIECIE = `
+SELECT MIN(expiresAt) AS kiedy FROM seats
+ WHERE eventId = ?2 AND status = 'reserved' AND expiresAt > ?1`;
+
+export interface StanSali {
+  dane: SzczegolySeansu;
+  /** Najbliższa chwila, w której któraś ważna rezerwacja wygaśnie (null = brak takich). */
+  najblizszeWygasniecie: number | null;
+}
+
+/** Stan sali i najbliższe wygaśnięcie w JEDNEJ podróży do bazy (dla Durable Objectu sali). */
+export async function stanSali(db: D1Database, eventId: string, teraz: number): Promise<StanSali | null> {
+  const [seans, zajete, wygasniecie] = await db.batch<Seans | { seatId: string } | { kiedy: number | null }>([
+    db.prepare(SQL_SEANS).bind(eventId),
+    db.prepare(SQL_ZAJETE).bind(teraz, eventId),
+    db.prepare(SQL_NAJBLIZSZE_WYGASNIECIE).bind(teraz, eventId),
+  ]);
+  const event = (seans?.results[0] as Seans | undefined) ?? null;
+  if (!event) return null;
+  const takenSeats = ((zajete?.results ?? []) as { seatId: string }[]).map((w) => w.seatId).sort();
+  const kiedy = (wygasniecie?.results[0] as { kiedy: number | null } | undefined)?.kiedy ?? null;
+  return { dane: { event, takenSeats }, najblizszeWygasniecie: kiedy };
 }
 
 export async function pobierzSeans(db: D1Database, eventId: string): Promise<Seans | null> {

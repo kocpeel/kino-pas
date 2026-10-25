@@ -108,7 +108,8 @@ Kanał na żywo mapy sali. Wymaga `Upgrade: websocket`, a `Origin` (jeśli jest)
 | 403 | Obcy `Origin`. |
 | 404 | Nieznany seans albo niepoprawny identyfikator. |
 | 426 | Zwykłe żądanie HTTP zamiast WebSocketu. |
-| 503 | Kanał chwilowo niedostępny (brak bindingu Durable Objectu). |
+| 429 | Za dużo połączeń z jednego IP: ponad 10 równoczesnych na salę (`Retry-After: 30`) albo zgrubny limit nowych połączeń (`Retry-After: 60`). |
+| 503 | Kanał chwilowo niedostępny albo przeciążenie: nowe połączenia odpadają pierwsze (`Retry-After: 5`). Mapa działa wtedy na odpytywaniu. |
 
 Wiadomości serwera (tekst JSON), wysyłane zaraz po połączeniu, po każdej rezerwacji na tej sali i gdy rezerwacja wygaśnie:
 

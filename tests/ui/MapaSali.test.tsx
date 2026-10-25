@@ -15,7 +15,7 @@ vi.mock("@/lib/klient/api", async (oryginal) => ({
 const { MapaSali, INTERWAL_ODSWIEZANIA_MS } = await import("@/components/sala/MapaSali");
 
 function renderuj(zajete: string[] = ["A1"]) {
-  return render(<MapaSali eventId="metropolis" rzedy={8} miejscaWRzedzie={10} poczatkoweZajete={zajete} />);
+  return render(<MapaSali eventId="metropolis" rzedy={8} miejscaWRzedzie={10} poczatkoweZajete={zajete} adresKanalu={null} />);
 }
 
 const fotel = (seatId: string) => document.querySelector<HTMLButtonElement>(`[data-seat="${seatId}"]`)!;
@@ -162,7 +162,7 @@ describe("MapaSali: koszt odświeżania", () => {
     vi.useFakeTimers();
     bezZmianPoPierwszym();
     const mapa = () => (
-      <MapaSali eventId="wstecz" rzedy={8} miejscaWRzedzie={10} poczatkoweZajete={[]} wyrenderowano={123} />
+      <MapaSali eventId="wstecz" rzedy={8} miejscaWRzedzie={10} poczatkoweZajete={[]} wyrenderowano={123} adresKanalu={null} />
     );
     const pierwszy = render(mapa());
     await act(() => vi.advanceTimersByTimeAsync(100));
