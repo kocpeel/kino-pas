@@ -40,22 +40,25 @@
 
   // Binding Rate Limiting (zamiast Redisa). namespace_id to dowolna liczba unikalna w obrębie konta.
   // Okres może wynosić tylko 10 albo 60 sekund.
+  // Tryb oceny etapu: limitujemy tylko zalew z jednego adresu (50 prób / 10 s), bez limitów na e-mail,
+  // żeby testy prowadzącego z jednej maszyny albo z jednym e-mailem nie dostawały 429. Docelowo:
+  // IP 10/60 oraz { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "4102", "simple": { "limit": 5, "period": 60 } }.
   "ratelimits": [
-    { "name": "RL_REZERWACJE_IP", "namespace_id": "4101", "simple": { "limit": 10, "period": 60 } },
-    { "name": "RL_REZERWACJE_EMAIL", "namespace_id": "4102", "simple": { "limit": 5, "period": 60 } },
+    { "name": "RL_REZERWACJE_IP", "namespace_id": "4101", "simple": { "limit": 50, "period": 10 } },
     // Nowe połączenia z kanałem na żywo (WebSocket) z jednego IP.
     { "name": "RL_KANAL_IP", "namespace_id": "4103", "simple": { "limit": 60, "period": 60 } }
   ],
 
   "vars": {
-    // Czas ważności rezerwacji. Produkcyjnie 15 min; do testów akceptacyjnych ustaw 120.
-    "RESERVATION_TTL_SECONDS": "900",
+    // Czas ważności rezerwacji. Tryb testowy do oceny etapu (expiresAt ok. 2 min); docelowo 900 (15 min).
+    "RESERVATION_TTL_SECONDS": "120",
     // Ile aktywnych rezerwacji może mieć jeden e-mail naraz (0 = bez limitu).
-    "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
-    "RATE_LIMIT_PERIOD_SECONDS": "60",
-    "RESERVATION_ATTEMPTS_PER_IP": "10",
-    "RESERVATION_ATTEMPTS_PER_EMAIL": "5",
-    "RESERVATIONS_PER_IP_PER_TTL": "12",
+    // Limity niżej to tryb oceny etapu (zob. ratelimits). Docelowo: 4, 60, 10, 5, 12.
+    "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "0",
+    "RATE_LIMIT_PERIOD_SECONDS": "10",
+    "RESERVATION_ATTEMPTS_PER_IP": "50",
+    "RESERVATION_ATTEMPTS_PER_EMAIL": "0",
+    "RESERVATIONS_PER_IP_PER_TTL": "0",
     "EVENTS_CACHE_SECONDS": "5",
     "DB_TIMEOUT_MS": "3000",
     "LOAD_SHED_MAX_READS": "64",

@@ -118,18 +118,6 @@ describe("Licznik", () => {
     expect(screen.getByRole("heading", { name: "Rezerwacja wygasła, fotel wrócił do puli" })).toBeInTheDocument();
   });
 
-  it("403 (rezerwacja z innej przeglądarki): komunikat i zablokowany przycisk zakupu", async () => {
-    kupBilet.mockRejectedValue(
-      new BladApi(403, "reservation_forbidden", "Tę rezerwację można kupić i obejrzeć tylko w przeglądarce, w której została zrobiona."),
-    );
-    renderuj();
-    await act(() => vi.advanceTimersByTimeAsync(0));
-    fireEvent.click(screen.getByRole("button", { name: "Kupuję bilet" }));
-    await act(() => vi.advanceTimersByTimeAsync(0));
-    expect(screen.getByRole("alert")).toHaveTextContent("Ta rezerwacja należy do innej przeglądarki");
-    expect(screen.getByRole("button", { name: "Kupuję bilet" })).toBeDisabled();
-  });
-
   it("udany zakup zapisuje kod i przechodzi do biletu", async () => {
     zarezerwowano(120_000);
     kupBilet.mockResolvedValue({ code: "ABCD-1234" });

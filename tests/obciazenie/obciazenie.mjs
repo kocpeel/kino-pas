@@ -61,7 +61,7 @@ async function rezerwuj(eventId, seatId, statystyki) {
       await czekaj(ponowZa * 1000 * (0.5 + Math.random()));
       continue;
     }
-    return { ...wynik, ciasteczko: wynik.naglowki.get("set-cookie")?.split(";")[0] ?? null };
+    return wynik;
   }
 }
 
@@ -126,10 +126,7 @@ async function w3(seans) {
   const zakupy = await Promise.all(
     Array.from({ length: 20 }, async () => {
       for (let proba = 0; ; proba++) {
-        const z = await zadanie(`/api/reservations/${reservationId}/purchase`, {
-          method: "POST",
-          headers: { cookie: r.ciasteczko },
-        });
+        const z = await zadanie(`/api/reservations/${reservationId}/purchase`, { method: "POST" });
         s.czasy.push(z.ms);
         s.statusy[z.status] = (s.statusy[z.status] ?? 0) + 1;
         if (z.status === 503 && proba < MAKS_PONOWIEN) {
@@ -144,8 +141,6 @@ async function w3(seans) {
   const kody = new Set(zakupy.filter((z) => z.status === 200 || z.status === 201).map((z) => z.cialo?.code));
   sprawdz("W3", pierwsze === 1, `20 równoległych zakupów: 201 × ${pierwsze} (ma być 1)`);
   sprawdz("W3", kody.size === 1 && zakupy.every((z) => z.status === 200 || z.status === 201), `jeden kod dla wszystkich: ${[...kody].join(", ")} (${opisStatystyk(s)})`);
-  const obcy = await zadanie(`/api/reservations/${reservationId}/purchase`, { method: "POST" });
-  sprawdz("W3", obcy.status === 403 && !JSON.stringify(obcy.cialo).includes([...kody][0]), `zakup bez ciasteczka: ${obcy.status} bez kodu`);
 }
 
 async function odczyty(seanse) {

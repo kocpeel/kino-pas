@@ -37,8 +37,6 @@ export function Licznik({ reservationId, eventId, seatId, seans }: Props) {
   const [wygaslaNaSerwerze, ustawWygaslaNaSerwerze] = useState(false);
   const [kupowanie, ustawKupowanie] = useState(false);
   const [blad, ustawBlad] = useState<OpisBleduUi | null>(null);
-  // 403: rezerwacja zrobiona w innej przeglądarce; ponawianie nic nie da.
-  const [obcaPrzegladarka, ustawObcaPrzegladarka] = useState(false);
   const [ogloszenie, ustawOgloszenie] = useState("");
   const wTrakcieRef = useRef(false);
   const kontrolerRef = useRef<AbortController | null>(null);
@@ -73,7 +71,7 @@ export function Licznik({ reservationId, eventId, seatId, seans }: Props) {
   const zapytanie = `seans=${encodeURIComponent(eventId ?? "")}&miejsce=${encodeURIComponent(seatId ?? "")}`;
 
   async function kup() {
-    if (wTrakcieRef.current || wygasla || obcaPrzegladarka) return;
+    if (wTrakcieRef.current || wygasla) return;
     wTrakcieRef.current = true;
     ustawKupowanie(true);
     ustawBlad(null);
@@ -88,7 +86,6 @@ export function Licznik({ reservationId, eventId, seatId, seans }: Props) {
       if (bladZadania instanceof BladApi && bladZadania.status === 410) {
         ustawWygaslaNaSerwerze(true);
       } else {
-        if (bladZadania instanceof BladApi && bladZadania.status === 403) ustawObcaPrzegladarka(true);
         ustawBlad(opiszBlad(bladZadania));
       }
       wTrakcieRef.current = false;
@@ -178,7 +175,7 @@ export function Licznik({ reservationId, eventId, seatId, seans }: Props) {
         </div>
       ) : null}
 
-      <Przycisk szeroki laduje={kupowanie} disabled={obcaPrzegladarka} onClick={() => void kup()}>
+      <Przycisk szeroki laduje={kupowanie} onClick={() => void kup()}>
         {kupowanie ? "Kupuję…" : blad?.akcja === "ponow" ? "Spróbuj ponownie: kupuję bilet" : "Kupuję bilet"}
       </Przycisk>
 

@@ -91,6 +91,42 @@ describe("Idempotency-Key w POST rezerwacji", () => {
   });
 });
 
+describe("identyczny POST rezerwacji bez Idempotency-Key", () => {
+  it("po kolei: drugi zwraca tę samą rezerwację, w bazie jedna", async () => {
+    const z = zaleznosci();
+    const pierwsza = await zarezerwuj(z, { seatId: "G1", email: "bezklucza@example.com" });
+    const druga = await zarezerwuj(z, { seatId: "G1", email: "bezklucza@example.com" });
+    expect([pierwsza.status, druga.status]).toEqual([201, 201]);
+    expect(druga.cialo).toEqual(pierwsza.cialo);
+    expect(druga.naglowki.get("idempotent-replayed")).toBe("true");
+    expect(await liczbaRezerwacji("bezklucza@example.com")).toBe(1);
+  });
+
+  it("równolegle: wszystkie odpowiedzi to ta sama rezerwacja", async () => {
+    const z = zaleznosci();
+    const wyniki = await Promise.all(
+      Array.from({ length: 10 }, () => zarezerwuj(z, { seatId: "G2", email: "bezklucza-r@example.com" })),
+    );
+    expect(wyniki.every((w) => w.status === 201)).toBe(true);
+    expect(new Set(wyniki.map((w) => w.cialo.reservationId)).size).toBe(1);
+    expect(await liczbaRezerwacji("bezklucza-r@example.com")).toBe(1);
+  });
+
+  it("inne imię albo e-mail na tym samym fotelu → 409 (to inny klient)", async () => {
+    const z = zaleznosci();
+    await zarezerwuj(z, { seatId: "G3", name: "Jan Testowy", email: "wlasciciel@example.com" });
+    expect((await zarezerwuj(z, { seatId: "G3", name: "Ktoś Inny", email: "wlasciciel@example.com" })).status).toBe(409);
+    expect((await zarezerwuj(z, { seatId: "G3", name: "Jan Testowy", email: "obcy@example.com" })).status).toBe(409);
+  });
+
+  it("po zakupie identyczny POST → 409 (fotel kupiony, nie ma czego oddać)", async () => {
+    const z = zaleznosci();
+    const r = await zarezerwuj(z, { seatId: "G4" });
+    await kup(z, r.cialo.reservationId);
+    expect((await zarezerwuj(z, { seatId: "G4" })).status).toBe(409);
+  });
+});
+
 describe("idempotentny zakup", () => {
   it("powtórzony zakup po sukcesie: ten sam kod; 201 za pierwszym razem, potem 200", async () => {
     const z = zaleznosci();

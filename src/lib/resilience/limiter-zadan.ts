@@ -11,6 +11,8 @@ import { zegarSystemowy } from "../czas";
 import { ocenProbe, type RegulaLimitu } from "./limit-zapytan";
 
 const KLUCZ_TRAFIEN = "trafienia";
+/** Kiedy najnowsze trafienie wypada z najdłuższego okna (wtedy zapis można skasować). */
+const KLUCZ_WYGASA = "wygasa";
 
 export class LimiterZadan extends DurableObject {
   // Kopia zapisu w pamięci; najwyżej max(limit) znaczników czasu.
@@ -25,14 +27,30 @@ export class LimiterZadan extends DurableObject {
     this.trafienia = ocena.trafienia;
     if (ocena.dozwolone) {
       // Stan w pamięci jest już zaktualizowany, więc czekanie na zapis nie psuje atomowości.
-      await this.ctx.storage.put(KLUCZ_TRAFIEN, ocena.trafienia);
-      await this.ctx.storage.setAlarm(teraz + Math.max(...reguly.map((r) => r.oknoS * 1000)));
+      const wygasa = teraz + Math.max(...reguly.map((r) => r.oknoS * 1000));
+      await this.ctx.storage.put({ [KLUCZ_TRAFIEN]: ocena.trafienia, [KLUCZ_WYGASA]: wygasa });
+      await this.ctx.storage.setAlarm(wygasa);
     }
     return { dozwolone: ocena.dozwolone, ponowZaMs: ocena.ponowZaMs };
   }
 
+  /**
+   * Sprzątanie po ciszy. Kasujemy tylko nasze klucze (nie `deleteAll`, które w alarmie przerwanym
+   * nowym `setAlarm` kończyło się błędem wewnętrznym) i tylko wtedy, gdy w międzyczasie nie przyszła
+   * nowa próba; inaczej przestawiamy alarm na nowy termin.
+   */
   async alarm(): Promise<void> {
-    this.trafienia = null;
-    await this.ctx.storage.deleteAll();
+    try {
+      const wygasa = (await this.ctx.storage.get<number>(KLUCZ_WYGASA)) ?? 0;
+      if (zegarSystemowy.teraz() < wygasa) {
+        await this.ctx.storage.setAlarm(wygasa);
+        return;
+      }
+      this.trafienia = null;
+      await this.ctx.storage.delete([KLUCZ_TRAFIEN, KLUCZ_WYGASA]);
+    } catch (blad) {
+      // Zapis zostaje, a następna próba i tak ustawi nowy alarm: nic się nie psuje.
+      console.warn("Limiter: sprzątanie po alarmie nie powiodło się", blad);
+    }
   }
 }

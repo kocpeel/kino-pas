@@ -7,6 +7,7 @@ import {
   lancuchLimiterow,
   ocenProbe,
   sprawdzLimityRezerwacji,
+  TIMEOUT_LIMITERA_MS,
   type Limiter,
   type RegulaLimitu,
 } from "../../src/lib/resilience/limit-zapytan";
@@ -221,6 +222,17 @@ describe("rate limiting", () => {
     await expect(
       sprawdzLimityRezerwacji({ ip: zepsuty }, { ip: "1.1.1.1", email: "a@b.pl" }, 60),
     ).resolves.toBeUndefined();
+    ostrzezenie.mockRestore();
+  });
+
+  it("zawieszony limiter nie zawiesza rezerwacji: po TIMEOUT_LIMITERA_MS przepuszczamy", async () => {
+    const zawieszony: Limiter = { limit: () => new Promise(() => {}) };
+    const ostrzezenie = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const start = Date.now();
+    await expect(
+      sprawdzLimityRezerwacji({ ip: zawieszony }, { ip: "1.1.1.1", email: "a@b.pl" }, 60),
+    ).resolves.toBeUndefined();
+    expect(Date.now() - start).toBeLessThan(TIMEOUT_LIMITERA_MS + 1000);
     ostrzezenie.mockRestore();
   });
 });

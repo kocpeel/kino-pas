@@ -1,8 +1,7 @@
 "use client";
 
 // Bilet C po stronie klienta: kod z sessionStorage albo, po odświeżeniu w nowej karcie,
-// odtworzony idempotentnym POST zakupu (serwer zwraca zapisany kod, ale tylko przeglądarce
-// z ciasteczkiem tej rezerwacji; obca dostaje 403). Plus kopiuj / drukuj.
+// odtworzony idempotentnym POST zakupu (serwer zwraca zapisany kod). Plus kopiuj / drukuj.
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Baner } from "@/components/ui/Baner";
@@ -23,7 +22,7 @@ interface Props {
 export function AkcjeBiletu({ reservationId, dane }: Props) {
   const [kod, ustawKod] = useState<string | null>(null);
   const [blad, ustawBlad] = useState<OpisBleduUi | null>(null);
-  const [brak, ustawBrak] = useState<"nie-znaleziono" | "obca-przegladarka" | null>(null);
+  const [nieZnaleziono, ustawNieZnaleziono] = useState(false);
   const [proba, ustawProbe] = useState(0);
   const [toast, ustawToast] = useState<string | null>(null);
   const timerToastu = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
@@ -43,9 +42,7 @@ export function AkcjeBiletu({ reservationId, dane }: Props) {
       .catch((bladZadania: unknown) => {
         if (czyPrzerwane(bladZadania)) return;
         if (bladZadania instanceof BladApi && (bladZadania.status === 410 || bladZadania.status === 400)) {
-          ustawBrak("nie-znaleziono");
-        } else if (bladZadania instanceof BladApi && bladZadania.status === 403) {
-          ustawBrak("obca-przegladarka");
+          ustawNieZnaleziono(true);
         } else {
           ustawBlad(opiszBlad(bladZadania));
         }
@@ -72,24 +69,11 @@ export function AkcjeBiletu({ reservationId, dane }: Props) {
     }
   };
 
-  if (brak === "nie-znaleziono") {
+  if (nieZnaleziono) {
     return (
       <div className="komunikat-strony">
         <h1 className="tytul-strony">Nie znaleźliśmy tego biletu</h1>
         <p className="podtytul">Rezerwacja wygasła albo nie istnieje, więc bilet nie został kupiony.</p>
-        <LinkPrzycisk href="/">Wróć do repertuaru</LinkPrzycisk>
-      </div>
-    );
-  }
-
-  if (brak === "obca-przegladarka") {
-    return (
-      <div className="komunikat-strony">
-        <h1 className="tytul-strony">Ten bilet otworzysz tylko tam, gdzie go kupiono</h1>
-        <p className="podtytul">
-          Kod biletu pokazujemy wyłącznie w przeglądarce, w której zrobiono rezerwację. Sam link nie wystarcza, żeby
-          nikt obcy nie zobaczył Twojego kodu.
-        </p>
         <LinkPrzycisk href="/">Wróć do repertuaru</LinkPrzycisk>
       </div>
     );

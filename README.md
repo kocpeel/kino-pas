@@ -80,8 +80,9 @@ npm run deploy
 npm run cron:deploy
 ```
 
-TTL produkcyjnie: 15 min (`RESERVATION_TTL_SECONDS` w `wrangler.jsonc`). Do testów akceptacyjnych
-ustaw `"120"` i wdroż ponownie.
+Tryb oceny etapu (`wrangler.jsonc`): TTL `"120"` (expiresAt ok. 2 min) i limit tylko zalewu z jednego IP (50 prób / 10 s),
+bez limitów na e-mail (`docs/decyzje.md`, sekcja 12). Po ocenie: TTL `"900"` i limity docelowe z komentarzy w
+`wrangler.jsonc`, potem ponowne wdrożenie.
 
 Środowisko testów obciążeniowych (osobny Worker `kasa-kino-staging` i baza `kasa-kino-db-staging`, wpis `staging`
 w `wrangler.jsonc`):

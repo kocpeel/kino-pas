@@ -83,42 +83,21 @@ async function odczytaj<T>(odpowiedz: Response): Promise<Wynik<T>> {
   return { status: odpowiedz.status, cialo: (await odpowiedz.json()) as T, naglowki: odpowiedz.headers };
 }
 
-/** Ciasteczko „przeglądarki" z sekretem rezerwacji (jak w prawdziwym kliencie). */
-export function ciasteczkoZOdpowiedzi(naglowki: Headers): string | null {
-  return naglowki.get("set-cookie")?.split(";")[0] ?? null;
-}
-
-// Pamięć „przeglądarki" testów: reservationId → ciasteczko z odpowiedzi rezerwacji.
-const ciasteczka = new Map<string, string>();
-
 export async function zarezerwuj(
   z: Zaleznosci,
   dane: DaneTestowe,
   opcje: { klucz?: string; ip?: string } = {},
 ): Promise<Wynik<{ reservationId: string; expiresAt: number; error?: string }>> {
-  const wynik = await odczytaj<{ reservationId: string; expiresAt: number; error?: string }>(
-    await obsluzRezerwacje(zadanieRezerwacji(dane, opcje), () => z),
-  );
-  const ciasteczko = ciasteczkoZOdpowiedzi(wynik.naglowki);
-  if (wynik.status === 201 && ciasteczko) ciasteczka.set(wynik.cialo.reservationId, ciasteczko);
-  return wynik;
+  return odczytaj(await obsluzRezerwacje(zadanieRezerwacji(dane, opcje), () => z));
 }
 
-export function zadanieZakupu(reservationId: string, ciasteczko: string | null | undefined): Request {
-  return new Request(`https://kasa.test/api/reservations/${reservationId}/purchase`, {
-    method: "POST",
-    headers: ciasteczko ? { cookie: ciasteczko } : {},
-  });
+/** Zakup jak w kontrakcie: sam identyfikator rezerwacji, bez ciasteczek ani ciała. */
+export function zadanieZakupu(reservationId: string): Request {
+  return new Request(`https://kasa.test/api/reservations/${reservationId}/purchase`, { method: "POST" });
 }
 
-/** Zakup z ciasteczkiem tej rezerwacji (jak w przeglądarce, która ją zrobiła), chyba że podano inne. */
-export async function kup(
-  z: Zaleznosci,
-  reservationId: string,
-  opcje: { ciasteczko?: string | null } = {},
-): Promise<Wynik<{ code: string; error?: string }>> {
-  const ciasteczko = "ciasteczko" in opcje ? opcje.ciasteczko : ciasteczka.get(reservationId);
-  return odczytaj(await obsluzZakup(zadanieZakupu(reservationId, ciasteczko), () => z, reservationId));
+export async function kup(z: Zaleznosci, reservationId: string): Promise<Wynik<{ code: string; error?: string }>> {
+  return odczytaj(await obsluzZakup(zadanieZakupu(reservationId), () => z, reservationId));
 }
 
 export async function wierszMiejsca(seatId: string, eventId = SEANS) {

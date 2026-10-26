@@ -67,7 +67,7 @@ test("3. dwie sesje wybierają ten sam fotel: druga od razu dostaje komunikat i 
   await Promise.all([pierwsza.close(), druga.close()]);
 });
 
-test("4. odświeżenie strony licznika i biletu: nic nie wybucha, kod ten sam", async ({ page, browser, request }) => {
+test("4. odświeżenie strony licznika i biletu: nic nie wybucha, kod ten sam", async ({ page, request }) => {
   const [seans] = await seanse(request);
   const seatId = await wolnyFotel(request, seans!.id);
   await page.goto(`/seans/${seans!.id}/miejsce/${seatId}`);
@@ -84,20 +84,11 @@ test("4. odświeżenie strony licznika i biletu: nic nie wybucha, kod ten sam", 
   await page.reload();
   await expect(kod).toHaveText(tekstKodu!);
 
-  // Nowa karta tej samej przeglądarki (bez sessionStorage, z ciasteczkiem rezerwacji):
-  // kod odtworzony idempotentnym POST zakupu.
+  // Nowa karta (bez sessionStorage): kod odtworzony idempotentnym POST zakupu.
   const nowaKarta = await page.context().newPage();
   await nowaKarta.goto(page.url());
   await expect(nowaKarta.locator(".bilet__kod")).toHaveText(tekstKodu!);
   await nowaKarta.close();
-
-  // Inna przeglądarka z samym linkiem: kodu nie widać.
-  const obca = await browser.newContext();
-  const obcaKarta = await obca.newPage();
-  await obcaKarta.goto(page.url());
-  await expect(obcaKarta.getByRole("heading", { name: "Ten bilet otworzysz tylko tam, gdzie go kupiono" })).toBeVisible();
-  await expect(obcaKarta.getByText(tekstKodu!)).toHaveCount(0);
-  await obca.close();
 });
 
 test("5. telefon (375 px): mapa mieści się bez przewijania poziomego", async ({ browser, request }) => {

@@ -239,9 +239,9 @@ describe("błędne wejście → kontrolowane 4xx, nigdy 500", () => {
   });
 
   it("zły identyfikator rezerwacji przy zakupie → 400, nieznany → 410", async () => {
-    expect((await obsluzZakup(zadanieZakupu("abc", null), z, "abc")).status).toBe(400);
+    expect((await obsluzZakup(zadanieZakupu("abc"), z, "abc")).status).toBe(400);
     const nieznana = "0f8fad5b-d9cb-469f-a165-70867728950e";
-    expect((await obsluzZakup(zadanieZakupu(nieznana, null), z, nieznana)).status).toBe(410);
+    expect((await obsluzZakup(zadanieZakupu(nieznana), z, nieznana)).status).toBe(410);
   });
 
   it("nieistniejący seans w szczegółach → 404", async () => {

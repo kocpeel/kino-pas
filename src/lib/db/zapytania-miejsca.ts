@@ -15,8 +15,6 @@ export interface ParametryRezerwacji {
   teraz: number;
   /** 0 wyłącza limit aktywnych rezerwacji na e-mail. */
   limitNaEmail: number;
-  /** Skrót sekretu rezerwacji (sam sekret trafia tylko do ciasteczka klienta). */
-  secretHash: string;
 }
 
 // ?6 = teraz. Fotel jest do wzięcia, gdy jest wolny albo jego rezerwacja wygasła (leniwe wygasanie).
@@ -30,7 +28,7 @@ UPDATE seats
        email = ?4,
        idempotencyKey = ?5,
        code = NULL,
-       secretHash = ?10,
+       secretHash = NULL,
        version = version + 1,
        updatedAt = ?6
  WHERE eventId = ?7
@@ -52,28 +50,12 @@ export async function zarezerwujMiejsce(db: D1Database, p: ParametryRezerwacji):
       p.eventId,
       p.seatId,
       p.limitNaEmail,
-      p.secretHash,
     )
     .run();
   return wynik.meta.changes === 1;
 }
 
-/** Nowy sekret dla ważnej rezerwacji (powtórka z tym samym Idempotency-Key unieważnia poprzedni). */
-export async function zmienSekretRezerwacji(
-  db: D1Database,
-  p: { reservationId: string; secretHash: string; teraz: number },
-): Promise<boolean> {
-  const wynik = await db
-    .prepare(
-      `UPDATE seats SET secretHash = ?1, updatedAt = ?3
-        WHERE reservationId = ?2 AND status = 'reserved' AND expiresAt > ?3`,
-    )
-    .bind(p.secretHash, p.reservationId, p.teraz)
-    .run();
-  return wynik.meta.changes === 1;
-}
-
-// Zakup wymaga sekretu rezerwacji (NULL = rezerwacja sprzed wprowadzenia sekretów).
+// Zakup zgodnie ze wspólnym kontraktem: wystarczy identyfikator ważnej rezerwacji (losowy UUID).
 const SQL_ZAKUP = `
 UPDATE seats
    SET status = 'purchased',
@@ -83,14 +65,13 @@ UPDATE seats
        updatedAt = ?2
  WHERE reservationId = ?3
    AND status = 'reserved'
-   AND expiresAt > ?2
-   AND (secretHash IS NULL OR secretHash = ?4)`;
+   AND expiresAt > ?2`;
 
 export async function kupMiejsce(
   db: D1Database,
-  p: { reservationId: string; code: string; teraz: number; secretHash: string | null },
+  p: { reservationId: string; code: string; teraz: number },
 ): Promise<boolean> {
-  const wynik = await db.prepare(SQL_ZAKUP).bind(p.code, p.teraz, p.reservationId, p.secretHash).run();
+  const wynik = await db.prepare(SQL_ZAKUP).bind(p.code, p.teraz, p.reservationId).run();
   return wynik.meta.changes === 1;
 }
 
@@ -160,11 +141,16 @@ export async function znajdzPoKluczuIdempotencji(db: D1Database, klucz: string):
 export interface StanMiejsca {
   status: StatusMiejsca;
   expiresAt: number | null;
+  reservationId: string | null;
+  customerName: string | null;
+  email: string | null;
 }
 
 export async function stanMiejsca(db: D1Database, eventId: string, seatId: string): Promise<StanMiejsca | null> {
   return db
-    .prepare(`SELECT status, expiresAt FROM seats WHERE eventId = ?1 AND seatId = ?2`)
+    .prepare(
+      `SELECT status, expiresAt, reservationId, customerName, email FROM seats WHERE eventId = ?1 AND seatId = ?2`,
+    )
     .bind(eventId, seatId)
     .first<StanMiejsca>();
 }
@@ -189,12 +175,11 @@ export interface WierszPoRezerwacji {
   status: StatusMiejsca;
   code: string | null;
   expiresAt: number | null;
-  secretHash: string | null;
 }
 
 export async function znajdzPoRezerwacji(db: D1Database, reservationId: string): Promise<WierszPoRezerwacji | null> {
   return db
-    .prepare(`SELECT status, code, expiresAt, secretHash FROM seats WHERE reservationId = ?1`)
+    .prepare(`SELECT status, code, expiresAt FROM seats WHERE reservationId = ?1`)
     .bind(reservationId)
     .first<WierszPoRezerwacji>();
 }

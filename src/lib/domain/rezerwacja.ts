@@ -59,41 +59,12 @@ export interface OpcjeRezerwacji {
 
 export interface WynikRezerwacji {
   rezerwacja: UtworzonaRezerwacja;
-  /** true, gdy to powtórka z tym samym Idempotency-Key (nic nie zapisano). */
+  /** true, gdy to powtórka tego samego żądania (nic nie zapisano). */
   powtorka: boolean;
-  /** Sekret rezerwacji dla klienta (do ciasteczka HttpOnly). W bazie jest tylko jego skrót. */
-  sekret: string;
 }
 
-// ——— Sekret rezerwacji ———
-// Identyfikator rezerwacji jest w adresie, więc sam nie może wystarczać do zakupu i pokazania kodu.
-// Klient dostaje losowy sekret w ciasteczku HttpOnly; baza zna tylko skrót SHA-256.
-
-function base64url(bajty: Uint8Array): string {
-  let tekst = "";
-  for (const b of bajty) tekst += String.fromCharCode(b);
-  return btoa(tekst).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-}
-
-export async function skrotSekretu(sekret: string): Promise<string> {
-  const skrot = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(sekret)));
-  return Array.from(skrot, (b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-/** Losowy sekret (256 bitów) i jego skrót do zapisania w bazie. */
-export async function nowySekretRezerwacji(): Promise<{ sekret: string; skrot: string }> {
-  const sekret = base64url(crypto.getRandomValues(new Uint8Array(32)));
-  return { sekret, skrot: await skrotSekretu(sekret) };
-}
-
-/**
- * Powtórka z tym samym kluczem: ten sam klient ponawia żądanie (np. po timeoucie), a sekretu
- * z pierwszej odpowiedzi nie da się odtworzyć (baza ma tylko skrót), więc wydajemy nowy.
- */
-async function powtorka(db: D1Database, rezerwacja: UtworzonaRezerwacja, teraz: number): Promise<WynikRezerwacji> {
-  const { sekret, skrot } = await nowySekretRezerwacji();
-  await miejsca.zmienSekretRezerwacji(db, { reservationId: rezerwacja.reservationId, secretHash: skrot, teraz });
-  return { rezerwacja, powtorka: true, sekret };
+function powtorka(rezerwacja: UtworzonaRezerwacja): WynikRezerwacji {
+  return { rezerwacja, powtorka: true };
 }
 
 export async function zarezerwuj(
@@ -105,12 +76,11 @@ export async function zarezerwuj(
 
   if (klucz) {
     const poprzednia = await poprzedniaRezerwacja(db, klucz, wejscie, opcje.teraz);
-    if (poprzednia) return powtorka(db, poprzednia, opcje.teraz);
+    if (poprzednia) return powtorka(poprzednia);
   }
 
   const reservationId = (opcje.noweId ?? (() => crypto.randomUUID()))();
   const expiresAt = opcje.teraz + opcje.ttlMs;
-  const { sekret, skrot } = await nowySekretRezerwacji();
 
   let zapisano: boolean;
   try {
@@ -124,26 +94,38 @@ export async function zarezerwuj(
       idempotencyKey: klucz,
       teraz: opcje.teraz,
       limitNaEmail: opcje.limitNaEmail,
-      secretHash: skrot,
     });
   } catch (blad) {
     // Równoległe żądanie z tym samym kluczem zapisało go pierwsze (na innym fotelu).
     if (klucz && miejsca.naruszonaUnikalnosc(blad) === "idempotencyKey") {
       const poprzednia = await poprzedniaRezerwacja(db, klucz, wejscie, opcje.teraz);
-      if (poprzednia) return powtorka(db, poprzednia, opcje.teraz);
+      if (poprzednia) return powtorka(poprzednia);
       throw new BladDomenowy("KLUCZ_UZYTY");
     }
     throw blad;
   }
 
-  if (zapisano) return { rezerwacja: { reservationId, expiresAt }, powtorka: false, sekret };
+  if (zapisano) return { rezerwacja: { reservationId, expiresAt }, powtorka: false };
 
   // 0 zmian. Najpierw: może to równoległa powtórka z tym samym kluczem, która wygrała.
   if (klucz) {
     const poprzednia = await poprzedniaRezerwacja(db, klucz, wejscie, opcje.teraz);
-    if (poprzednia) return powtorka(db, poprzednia, opcje.teraz);
+    if (poprzednia) return powtorka(poprzednia);
   }
-  throw await przyczynaOdmowy(db, wejscie, opcje);
+  const stan = await miejsca.stanMiejsca(db, wejscie.eventId, wejscie.seatId);
+  // Identyczne żądanie (ten sam seans, fotel, imię i e-mail) bez klucza albo z innym kluczem, gdy fotel trzyma
+  // już ważna rezerwacja tego klienta: to podwójne kliknięcie albo ponowienie, więc oddajemy tę samą rezerwację.
+  if (
+    stan?.status === "reserved" &&
+    stan.reservationId &&
+    stan.expiresAt !== null &&
+    stan.expiresAt > opcje.teraz &&
+    stan.email === wejscie.email &&
+    stan.customerName === wejscie.name
+  ) {
+    return powtorka({ reservationId: stan.reservationId, expiresAt: stan.expiresAt });
+  }
+  throw await przyczynaOdmowy(db, wejscie, opcje, stan);
 }
 
 /**
@@ -171,8 +153,12 @@ async function poprzedniaRezerwacja(
 }
 
 /** Dobiera komunikat po nieudanym zapisie. Poprawność od tego odczytu nie zależy. */
-async function przyczynaOdmowy(db: D1Database, wejscie: WejscieRezerwacji, opcje: OpcjeRezerwacji) {
-  const stan = await miejsca.stanMiejsca(db, wejscie.eventId, wejscie.seatId);
+async function przyczynaOdmowy(
+  db: D1Database,
+  wejscie: WejscieRezerwacji,
+  opcje: OpcjeRezerwacji,
+  stan: miejsca.StanMiejsca | null,
+) {
   if (!stan) return new BladDomenowy("NIE_ZNALEZIONO", { komunikat: "Nie ma takiego seansu albo fotela." });
   const zajete =
     stan.status === "purchased" || (stan.status === "reserved" && stan.expiresAt !== null && stan.expiresAt > opcje.teraz);
@@ -209,8 +195,6 @@ export function generujKodBiletu(losuj: (bufor: Uint8Array) => Uint8Array = (b) 
 
 export interface OpcjeZakupu {
   teraz: number;
-  /** Sekret z ciasteczka klienta (null = brak ciasteczka). */
-  sekret: string | null;
   generujKod?: () => string;
 }
 
@@ -222,13 +206,12 @@ export interface WynikZakupu {
 
 export async function kupBilet(db: D1Database, reservationId: string, opcje: OpcjeZakupu): Promise<WynikZakupu> {
   const generujKod = opcje.generujKod ?? (() => generujKodBiletu());
-  const secretHash = opcje.sekret ? await skrotSekretu(opcje.sekret) : null;
 
   for (let proba = 1; ; proba++) {
     // Kod losujemy przed zapytaniem. Jeśli wygra inne, równoległe kliknięcie, ten kod przepada.
     const code = generujKod();
     try {
-      if (await miejsca.kupMiejsce(db, { reservationId, code, teraz: opcje.teraz, secretHash })) {
+      if (await miejsca.kupMiejsce(db, { reservationId, code, teraz: opcje.teraz })) {
         return { bilet: { code }, nowy: true };
       }
       break;
@@ -239,15 +222,9 @@ export async function kupBilet(db: D1Database, reservationId: string, opcje: Opc
   }
 
   const wiersz = await miejsca.znajdzPoRezerwacji(db, reservationId);
-  // NULL = rezerwacja sprzed wprowadzenia sekretów: wtedy sekret nie jest wymagany.
-  const sekretPasuje = wiersz?.secretHash === null || wiersz?.secretHash === secretHash;
   if (wiersz?.status === "purchased" && wiersz.code) {
-    // Zapisany kod pokazujemy tylko właścicielowi rezerwacji.
-    if (!sekretPasuje) throw new BladDomenowy("BRAK_DOSTEPU");
     return { bilet: { code: wiersz.code }, nowy: false };
   }
-  const wazna = wiersz?.status === "reserved" && wiersz.expiresAt !== null && wiersz.expiresAt > opcje.teraz;
-  if (wazna && !sekretPasuje) throw new BladDomenowy("BRAK_DOSTEPU");
   // Brak wiersza = wygasła i fotel ma już nową rezerwację albo nigdy nie istniała. Ta sama odmowa.
   throw new BladDomenowy("WYGASLA");
 }

@@ -1,10 +1,11 @@
 // Rate limiting dla POST rezerwacji: osobno na IP i na e-mail.
 // Dwa poziomy: binding Workers Rate Limiting (tani, lokalny, ale liczy w przybliżeniu) jako pierwsze sito
 // i ścisły limiter na Durable Object (`LimiterZadan`), który naprawdę egzekwuje limit.
-// Awaria limitera nie blokuje sprzedaży (fail-open), bo poprawność zapewnia baza.
+// Awaria albo brak odpowiedzi limitera nie blokuje sprzedaży (fail-open), bo poprawność zapewnia baza.
 
 import { BladDomenowy } from "../domain/bledy";
 import type { LimiterZadan } from "./limiter-zadan";
+import { zTimeoutem } from "./timeout";
 
 /** Kształt bindingu `RateLimit` z Workers (tylko to, czego używamy) i naszego limitera na obiekcie. */
 export interface Limiter {
@@ -98,10 +99,13 @@ async function skrot(tekst: string): Promise<string> {
 
 type WynikSprawdzenia = { ok: true } | { ok: false; ponowZaS: number | undefined };
 
+/** Dłużej na limiter nie czekamy: zawieszony obiekt nie może zawiesić rezerwacji. */
+export const TIMEOUT_LIMITERA_MS = 1000;
+
 async function sprawdz(limiter: Limiter | undefined, klucz: Promise<string>): Promise<WynikSprawdzenia> {
   if (!limiter) return { ok: true };
   try {
-    const wynik = await limiter.limit({ key: await klucz });
+    const wynik = await zTimeoutem(limiter.limit({ key: await klucz }), TIMEOUT_LIMITERA_MS);
     return wynik.success ? { ok: true } : { ok: false, ponowZaS: wynik.ponowZaS };
   } catch (blad) {
     console.warn("Rate limiter niedostępny, przepuszczam żądanie", blad);

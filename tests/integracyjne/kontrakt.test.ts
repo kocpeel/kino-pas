@@ -3,7 +3,7 @@
 import { exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { SEANSE } from "../../seed/generuj-seed";
-import { ciasteczkoZOdpowiedzi, SEANS, zadanieRezerwacji, zasiej } from "./pomocnicze";
+import { SEANS, zadanieRezerwacji, zasiej } from "./pomocnicze";
 
 beforeEach(() => zasiej());
 
@@ -77,12 +77,10 @@ describe("POST /api/reservations", () => {
 });
 
 describe("POST /api/reservations/:id/purchase", () => {
-  it("201 → dokładnie { code }; powtórka 200 z tym samym kodem (z ciasteczkiem rezerwacji)", async () => {
+  it("201 → dokładnie { code }; powtórka 200 z tym samym kodem (sam identyfikator, bez ciasteczek)", async () => {
     const rezerwacja = await exports.default.fetch(zadanieRezerwacji({ seatId: "A3", email: "k5@example.com" }, { ip: "10.1.1.5" }));
     const r = (await rezerwacja.json()) as { reservationId: string };
-    const ciasteczko = ciasteczkoZOdpowiedzi(rezerwacja.headers)!;
-    const zakup = () =>
-      fetchWorkera(`/api/reservations/${r.reservationId}/purchase`, { method: "POST", headers: { cookie: ciasteczko } });
+    const zakup = () => fetchWorkera(`/api/reservations/${r.reservationId}/purchase`, { method: "POST" });
     const pierwszy = await zakup();
     expect(pierwszy.status).toBe(201);
     const kod = (await pierwszy.json()) as Record<string, unknown>;
@@ -92,15 +90,10 @@ describe("POST /api/reservations/:id/purchase", () => {
     expect(await drugi.json()).toEqual(kod);
   });
 
-  it("rezerwacja ustawia ciasteczko z sekretem: HttpOnly, Secure, SameSite=Strict, tylko dla tej rezerwacji", async () => {
+  it("rezerwacja nie ustawia ciasteczek: klient bez pamięci ciasteczek przechodzi całą ścieżkę", async () => {
     const odp = await exports.default.fetch(zadanieRezerwacji({ seatId: "A4", email: "k6@example.com" }, { ip: "10.1.1.6" }));
-    const { reservationId } = (await odp.json()) as { reservationId: string };
-    const naglowek = odp.headers.get("set-cookie")!;
-    expect(naglowek).toMatch(/^kasa_rez=[A-Za-z0-9_-]{43}; /);
-    expect(naglowek).toContain(`Path=/api/reservations/${reservationId}`);
-    expect(naglowek).toMatch(/HttpOnly/);
-    expect(naglowek).toMatch(/Secure/);
-    expect(naglowek).toMatch(/SameSite=Strict/);
+    expect(odp.status).toBe(201);
+    expect(odp.headers.get("set-cookie")).toBeNull();
   });
 
   it("410 dla nieznanej/wygasłej rezerwacji", async () => {

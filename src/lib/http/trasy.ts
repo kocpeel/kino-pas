@@ -7,7 +7,6 @@ import { czyPoprawneIdRezerwacji, kupBilet, zarezerwuj } from "../domain/rezerwa
 import { adresKlienta, sprawdzLimityRezerwacji } from "../resilience/limit-zapytan";
 import { obsluzTrase, wPuli, type DostawcaZaleznosci } from "./obsluga-trasy";
 import { pobierzRepertuar, pobierzSzczegoly, uniewaznijPoZapisie } from "./odczyty";
-import { ciasteczkoRezerwacji, sekretZCiasteczka } from "./ciasteczka";
 import { json, jsonZEtagiem } from "./odpowiedzi";
 import { wejscieRezerwacji } from "./walidacja";
 
@@ -64,12 +63,7 @@ export function obsluzRezerwacje(zadanie: Request, dostawca: DostawcaZaleznosci)
     // Zakup nie zmienia zbioru zajętych foteli, więc tam powiadomienie nie jest potrzebne.
     uniewaznijPoZapisie(z, wejscie.eventId);
     z.powiadomSale?.(wejscie.eventId);
-    // Sekret rezerwacji tylko w ciasteczku HttpOnly: treść odpowiedzi zostaje zgodna z kontraktem.
-    const naglowki: Record<string, string> = {
-      "Set-Cookie": ciasteczkoRezerwacji(wynik.rezerwacja.reservationId, wynik.sekret),
-    };
-    if (wynik.powtorka) naglowki["Idempotent-Replayed"] = "true";
-    return json(wynik.rezerwacja, 201, naglowki);
+    return json(wynik.rezerwacja, 201, wynik.powtorka ? { "Idempotent-Replayed": "true" } : {});
   });
 }
 
@@ -80,8 +74,7 @@ export function obsluzZakup(zadanie: Request, dostawca: DostawcaZaleznosci, rese
       throw new BladDomenowy("NIEPOPRAWNE_DANE", { komunikat: "Niepoprawny identyfikator rezerwacji." });
     }
     const teraz = z.zegar.teraz();
-    const sekret = sekretZCiasteczka(zadanie);
-    const wynik = await wPuli(z, "zakup", (db) => kupBilet(db, reservationId, { teraz, sekret }));
+    const wynik = await wPuli(z, "zakup", (db) => kupBilet(db, reservationId, { teraz }));
     return json(wynik.bilet, wynik.nowy ? 201 : 200);
   });
 }
