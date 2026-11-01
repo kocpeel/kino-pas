@@ -31,6 +31,9 @@
     "EVENTS_CACHE_SECONDS": "5",
     "DB_TIMEOUT_MS": "3000",
     "LOAD_SHED_MAX_READS": "64",
-    "LOAD_SHED_MAX_WRITES": "32"
+    "LOAD_SHED_MAX_WRITES": "32",
+    // Tylko testowe wartości: sieć do Stripe'a w tych testach nie wychodzi.
+    "STRIPE_SECRET_KEY": "sk_test_integracyjny",
+    "STRIPE_WEBHOOK_SECRET": "whsec_test_integracyjny"
   }
 }

@@ -1,10 +1,11 @@
-// Jedyne miejsce, które czyta bindingi Workera (D1, rate limit, vars) i składa z nich
+// Jedyne miejsce, które czyta bindingi Workera (D1, rate limit, vars, sekrety Stripe'a) i składa z nich
 // zależności żądania. Kontekst Cloudflare dostarcza `kontekst.ts`; testy wołają
 // `zaleznosciZBindingow` bezpośrednio ze środowiskiem z Miniflare.
 
 import { zegarSystemowy, type Zegar } from "../czas";
 import { wczytajKonfiguracje, type Konfiguracja } from "../config";
 import type { SeansNaLiscie, SzczegolySeansu } from "../domain/typy";
+import { bramkaZeSrodowiska } from "../platnosci/stripe";
 import { CacheZLimitem } from "../resilience/cache";
 import type { SalaSeansu } from "../push/sala-seansu";
 import { adresSaliDev, czyNextDev } from "../push/tryb-dev";
@@ -19,6 +20,10 @@ export interface Bindingi {
   RL_REZERWACJE_EMAIL?: Limiter;
   SALE?: DurableObjectNamespace<SalaSeansu>;
   LIMITER?: DurableObjectNamespace<LimiterZadan>;
+  STRIPE_SECRET_KEY?: string;
+  STRIPE_WEBHOOK_SECRET?: string;
+  /** Tylko testy e2e: adres sztucznego Stripe'a. */
+  STRIPE_API_BASE?: string;
   [zmienna: string]: unknown;
 }
 
@@ -133,5 +138,7 @@ export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {})
     powiadomSale: czyNextDev()
       ? powiadamiaczSaliDev(adresSaliDev(), opcje.wTle)
       : powiadamiaczSal(env.SALE, opcje.wTle),
+    platnosci: bramkaZeSrodowiska(env),
+    sekretWebhooka: env.STRIPE_WEBHOOK_SECRET,
   };
 }

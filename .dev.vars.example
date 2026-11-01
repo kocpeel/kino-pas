@@ -1,3 +1,9 @@
 # Skopiuj do .dev.vars (poza gitem), żeby nadpisać vars z wrangler.jsonc lokalnie.
 # Krótki TTL ułatwia ręczne testowanie wygasania.
 RESERVATION_TTL_SECONDS=120
+
+# Stripe, wyłącznie tryb testowy. Klucz: panel Stripe → Developers → API keys.
+STRIPE_SECRET_KEY=sk_test_...
+# Sekret webhooka: wypisuje go `stripe listen --forward-to localhost:3000/api/webhooks/stripe`.
+# Bez Stripe CLI: dowolny tekst i `npm run stripe:nasluch`.
+STRIPE_WEBHOOK_SECRET=whsec_...

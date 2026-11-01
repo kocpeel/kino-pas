@@ -1,6 +1,6 @@
 # Kino Pas: kasa biletowa (Etap I)
 
-Rezerwacja i zakup biletów na 3 seanse (2 sale, 8 × 10 foteli). Next.js 16 na Cloudflare Workers
+Rezerwacja i płatność kartą przez Stripe Checkout (tryb testowy) za bilety na 3 seanse (2 sale, 8 × 10 foteli). Next.js 16 na Cloudflare Workers
 przez adapter OpenNext, baza D1, ścisły rate limiting na Durable Object (plus binding Workers Rate Limiting), mapa sali na żywo
 przez Durable Object + WebSocket (`worker.ts`), sprzątanie wygasłych rezerwacji przez osobny Worker z Cron Triggerem.
 
@@ -8,6 +8,8 @@ przez Durable Object + WebSocket (`worker.ts`), sprzątanie wygasłych rezerwacj
   i kontrola zdrowia, raz na dobę retencja danych osobowych)
 - Zdrowie: `GET /api/zdrowie`
 - Kontrakt API: [docs/kontrakt-api.md](docs/kontrakt-api.md)
+- Kontrakt wewnętrzny etapu II (strony powrotu, zapis płatności, outbox, inbox): [docs/kontrakt-wewnetrzny.md](docs/kontrakt-wewnetrzny.md)
+- Lista zagrożeń (Stripe jako cudzy system): [docs/zagrozenia.md](docs/zagrozenia.md)
 - Decyzje projektowe (wyścigi, TTL, idempotencja, odporność, wycieki): [docs/decyzje.md](docs/decyzje.md)
 - Treść zadania: [task1.txt](task1.txt)
 
@@ -26,7 +28,21 @@ Aplikacja: http://localhost:3000. `next dev` dostaje bindingi (D1, rate limit, v
 przez `initOpenNextCloudflareForDev`. Lokalna baza leży w `.wrangler/state`.
 `npm run dev` uruchamia dwa procesy: `next dev` i Worker sali (`workers/sala-dev`, port 8789) z Durable Objectem,
 więc mapa na żywo (WebSocket) działa także lokalnie. Same `npm run dev:next` startuje tylko Next.js (mapa wtedy odpytuje).
-Krótszy TTL do ręcznych testów: skopiuj `.dev.vars.example` do `.dev.vars` (TTL 120 s).
+Krótszy TTL do ręcznych testów i klucze Stripe'a: skopiuj `.dev.vars.example` do `.dev.vars` (poza gitem).
+
+Płatność lokalnie (karty testowe: `4242 4242 4242 4242` udana, `4000 0000 0000 0002` odmowa,
+`4000 0025 0000 3155` 3D Secure; data w przyszłości, dowolny CVC). Webhooki z sandboksu Stripe'a na localhost
+przekazuje Stripe CLI, a jego sekret wpisz jako `STRIPE_WEBHOOK_SECRET`:
+
+```bash
+stripe listen --forward-to localhost:3000/api/webhooks/stripe
+```
+
+Bez Stripe CLI (dowolny `STRIPE_WEBHOOK_SECRET` w `.dev.vars`):
+
+```bash
+npm run stripe:nasluch
+```
 
 Podgląd zbudowanego Workera w prawdziwym runtime (workerd):
 
@@ -34,7 +50,8 @@ Podgląd zbudowanego Workera w prawdziwym runtime (workerd):
 npm run preview
 ```
 
-Cron sprzątający lokalnie (ta sama lokalna baza), wywołanie: `curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"`:
+Cron lokalnie (ta sama lokalna baza; sprzątanie, outbox do Stripe'a i kontrola zdrowia; klucz Stripe'a w
+`workers/sprzatanie/.dev.vars`), wywołanie: `curl "http://localhost:8787/__scheduled?cron=*+*+*+*+*"`:
 
 ```bash
 npm run cron:dev
@@ -45,12 +62,12 @@ npm run cron:dev
 | Komenda | Co | Środowisko |
 |---|---|---|
 | `npm run test:unit` | domena, układ sali, walidacja, mapowanie błędów, odporność, statyczny test wycieków | Node |
-| `npm run test:int` | W1–W6 (współbieżność), wygasanie, idempotencja, odporność, kontrakt, Cron, kanał na żywo (Durable Object + WebSocket) | workerd + prawdziwy D1 (`@cloudflare/vitest-plugin`) |
-| `npm run test:ui` | komponenty: Fotel, MapaSali, Formularz, Licznik, hooki (timery po odmontowaniu) | jsdom + Testing Library |
-| `npm run test:e2e` | ścieżka A → B → C, wygaśnięcie (TTL 5 s), dwie sesje, odświeżanie, telefon, axe, klawiatura, repertuar po „Wstecz", mapa na żywo | Playwright + `npm run dev` (środowisko `e2e`) |
+| `npm run test:int` | W1–W6 (współbieżność), wygasanie, idempotencja, odporność, kontrakt, Cron, kanał na żywo (Durable Object + WebSocket), płatności: sesja, webhook, inbox, outbox, płatność po czasie | workerd + prawdziwy D1 (`@cloudflare/vitest-plugin`), Stripe bez sieci |
+| `npm run test:ui` | komponenty: Fotel, MapaSali, Formularz, Licznik, strona powrotu, hooki (timery po odmontowaniu) | jsdom + Testing Library |
+| `npm run test:e2e` | ścieżka A → B → C z płatnością, przerwana płatność, spóźniony webhook, płatność po czasie, wygaśnięcie (TTL 8 s), dwie sesje, odświeżanie, telefon, axe, klawiatura, repertuar po „Wstecz", mapa na żywo | Playwright + `npm run dev` (środowisko `e2e`) + sztuczny Stripe (`tests/e2e/sztuczny-stripe.mjs`), bez sekretów |
 | `npm run test:e2e:push` | build produkcyjny: mapa na żywo bez odpytywania, Content-Security-Policy z nonce'em | Playwright + zbudowana aplikacja w workerd |
-| `npm run test:obciazenie` | W1 (50 osób o jeden fotel), W2 (80 o różne), W3 (20 równoległych zakupów), odczyty: niezmienniki pod prawdziwym opóźnieniem | Node + środowisko `staging` w Cloudflare (`BASE_URL=…`) |
-| `npm run typecheck`, `npm run lint:wycieki` | TypeScript, stan na poziomie modułu | Node |
+| `npm run test:obciazenie` | W1 (50 osób o jeden fotel), W2 (80 o różne), W3 (20 równoległych „Zapłać”), W4 (20 × ten sam webhook), W5 (płatność w wyścigu z nową rezerwacją), odczyty: niezmienniki pod prawdziwym opóźnieniem | Node + środowisko `staging` w Cloudflare (`BASE_URL=…`, `STRIPE_WEBHOOK_SECRET=…`) |
+| `npm run typecheck`, `npm run lint:wycieki`, `npm run lint:sekrety` | TypeScript, stan na poziomie modułu, klucze Stripe'a w repozytorium i plikach przeglądarki | Node |
 
 `npm test` uruchamia testy jednostkowe, integracyjne i UI; CI (`.github/workflows/testy.yml`) robi to samo plus e2e
 przy każdym pushu na `feature`/`main`. E2E potrzebuje przeglądarki:
@@ -80,6 +97,25 @@ npm run deploy
 npm run cron:deploy
 ```
 
+Stripe (wyłącznie tryb testowy; klucz `sk_live_` wyłącza płatności). Sekrety są na serwerze, a nie w repozytorium:
+
+1. Klucz w obu Workerach. Worker z Cronem wysyła zwroty i pilnuje sesji:
+
+   ```bash
+   node scripts/cloudflare.mjs wrangler secret put STRIPE_SECRET_KEY
+   node scripts/cloudflare.mjs wrangler secret put STRIPE_SECRET_KEY --config workers/sprzatanie/wrangler.jsonc
+   ```
+
+2. Endpoint w panelu Stripe (tryb testowy): `https://<adres>/api/webhooks/stripe`, zdarzenia
+   `checkout.session.completed`, `checkout.session.async_payment_succeeded` i `checkout.session.expired`
+   (ostatnie niczego nie zmienia, ale bez płatności pokazuje w panelu Stripe'a, że dostarczanie działa). Jego sekret:
+
+   ```bash
+   node scripts/cloudflare.mjs wrangler secret put STRIPE_WEBHOOK_SECRET
+   ```
+
+3. Nauczyciel jako członek zespołu w panelu Stripe, z dostępem tylko do odczytu.
+
 Tryb oceny etapu (`wrangler.jsonc`): TTL `"120"` (expiresAt ok. 2 min) i limit tylko zalewu z jednego IP (50 prób / 10 s),
 bez limitów na e-mail (`docs/decyzje.md`, sekcja 12). Po ocenie: TTL `"900"` i limity docelowe z komentarzy w
 `wrangler.jsonc`, potem ponowne wdrożenie.
@@ -90,7 +126,7 @@ w `wrangler.jsonc`):
 ```bash
 npm run staging:deploy
 npm run staging:db
-BASE_URL=https://kasa-kino-staging.jajcokgt.workers.dev npm run test:obciazenie
+BASE_URL=https://kasa-kino-staging.jajcokgt.workers.dev STRIPE_WEBHOOK_SECRET=whsec_... npm run test:obciazenie
 ```
 
 Alerty (opcjonalnie): Worker sprzątający co minutę sprawdza `/api/zdrowie`. Problemy zawsze trafiają do Workers Logs
@@ -103,12 +139,13 @@ node scripts/cloudflare.mjs wrangler secret put ALERT_WEBHOOK_URL --config worke
 ## Struktura
 
 ```
-migrations/                   0001 schemat (events, seats, CHECK), 0002 indeks zajętych, 0003 sekret rezerwacji, 0004 stan alertów
+migrations/                   0001 schemat (events, seats, CHECK), 0002 indeks zajętych, 0003 sekret rezerwacji, 0004 stan alertów, 0005 płatności (cena, reservations, outbox, inbox)
 seed/generuj-seed.ts          3 seanse × 80 foteli (→ seed/seed.sql)
 src/app/                      strony (repertuar, mapa, formularz, licznik, bilet) i cienkie route handlery
 src/components/               ui/, repertuar/, sala/, rezerwacja/, bilet/, uklad/
 src/hooks/                    usePolling, useCountdown, useNaZywo (WebSocket)
-src/lib/domain/               czysta logika: układ sali, walidacja, rezerwacja i zakup, błędy
+src/lib/domain/               czysta logika: układ sali, walidacja, rezerwacja, płatność, worker outboxu, błędy
+src/lib/platnosci/            jedyne miejsce ze Stripe'em (SDK, klucz testowy, bezpiecznik, podpis webhooka)
 src/lib/db/                   zapytania D1 (jedyne miejsce z SQL) i bindingi
 src/lib/http/                 wrapper tras, walidacja wejścia, odpowiedzi, odczyty z cache
 src/lib/resilience/           timeout, rate limit (ścisły na Durable Object), load shedding, ograniczony cache
@@ -118,5 +155,6 @@ src/lib/klient/               fetch z timeoutem/retry/idempotencją, sessionStor
 workers/sprzatanie/           Worker z Cronami: sprzątanie, retencja, zdrowie i alerty (ta sama baza D1)
 workers/sala-dev/             Worker sali tylko do `npm run dev` (nie wdrażany)
 scripts/dev.mjs               `npm run dev`: Next.js + Worker sali obok siebie
+scripts/stripe-nasluch.mjs    zamiennik `stripe listen` do pracy lokalnej
 tests/                        jednostkowe/, integracyjne/, ui/, e2e/, e2e-push/, obciazenie/
 ```

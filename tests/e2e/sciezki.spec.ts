@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { fotel, seanse, wolnyFotel, wypelnijIRezerwuj } from "./pomocnicze";
+import { fotel, seanse, wolnyFotel, wypelnijIRezerwuj, zaplacNaStripe } from "./pomocnicze";
 
 test("1. pełna ścieżka: seans → fotel → formularz → licznik → bilet", async ({ page, request }) => {
   const [seans] = await seanse(request);
@@ -14,8 +14,9 @@ test("1. pełna ścieżka: seans → fotel → formularz → licznik → bilet",
   await expect(page.getByRole("heading", { name: `Rząd ${rzad}, miejsce ${numer}` })).toBeVisible();
   await wypelnijIRezerwuj(page);
 
-  await expect(page.getByRole("timer")).toHaveText(/^00:0[1-5]$/);
-  await page.getByRole("button", { name: "Kupuję bilet" }).click();
+  await expect(page.getByRole("timer")).toHaveText(/^00:0[1-8]$/);
+  await expect(page.getByRole("button", { name: "Zapłać 32 zł" })).toBeVisible();
+  await zaplacNaStripe(page);
 
   await expect(page).toHaveURL(/\/bilet\//);
   const bilet = page.getByRole("article", { name: "Bilet" });
@@ -76,7 +77,7 @@ test("4. odświeżenie strony licznika i biletu: nic nie wybucha, kod ten sam", 
 
   await page.reload();
   await expect(page.getByRole("timer")).toBeVisible();
-  await page.getByRole("button", { name: "Kupuję bilet" }).click();
+  await zaplacNaStripe(page);
   const kod = page.locator(".bilet__kod");
   await expect(kod).toHaveText(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
   const tekstKodu = await kod.textContent();
@@ -84,7 +85,7 @@ test("4. odświeżenie strony licznika i biletu: nic nie wybucha, kod ten sam", 
   await page.reload();
   await expect(kod).toHaveText(tekstKodu!);
 
-  // Nowa karta (bez sessionStorage): kod odtworzony idempotentnym POST zakupu.
+  // Nowa karta (bez sessionStorage): kod z serwera.
   const nowaKarta = await page.context().newPage();
   await nowaKarta.goto(page.url());
   await expect(nowaKarta.locator(".bilet__kod")).toHaveText(tekstKodu!);
@@ -110,7 +111,7 @@ test("5. telefon (375 px): mapa mieści się bez przewijania poziomego", async (
 });
 
 test("7. repertuar od razu pokazuje mniej wolnych miejsc po rezerwacji (także po Wstecz)", async ({ page, request }) => {
-  // Ostatni seans: pozostałe testy rezerwują na pierwszym, a ich rezerwacje (TTL 5 s) wygasałyby w trakcie.
+  // Ostatni seans: pozostałe testy rezerwują na pierwszym, a ich rezerwacje (TTL 8 s) wygasałyby w trakcie.
   const seans = (await seanse(request)).at(-1);
   const wolneNaKarcie = async () => {
     const tekst = await page.locator(".seans", { hasText: seans!.movie }).locator(".seans__wolne span").first().textContent();

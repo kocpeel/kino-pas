@@ -31,6 +31,7 @@ jobs:
       - run: npx next typegen
       - run: npm run typecheck
       - run: npm run lint:wycieki
+      - run: npm run lint:sekrety
       - run: npm run test:unit
       - run: npm run test:int
       - run: npm run test:ui

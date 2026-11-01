@@ -4,7 +4,10 @@
 // ALERT_WEBHOOK_URL, także na webhook (Slack, Discord albo inny przyjmujący JSON z `text`/`content`).
 // Stan w tabeli alert_state, żeby nie wysyłać alertu co minutę.
 
+import { policzDlq } from "../../../src/lib/db/zapytania-outbox";
+
 const NAZWA_KONTROLI = "aplikacja";
+const NAZWA_KONTROLI_DLQ = "outbox-dlq";
 /** Tyle kolejnych nieudanych kontroli, zanim pójdzie alert (pojedynczy błysk nie budzi nikogo). */
 const PROG_NIEUDANYCH = 2;
 const PRZYPOMNIENIE_MS = 30 * 60_000;
@@ -72,19 +75,38 @@ interface StanAlertu {
   alertedAt: number;
 }
 
-/** Kontrola + decyzja o alercie. Zwraca wynik kontroli (do logów i testów). */
+/** Wiadomość w DLQ czeka na człowieka: np. zwrot, którego Stripe nie przyjął przez kilka godzin. */
+async function sprawdzDlq(env: SrodowiskoZdrowia): Promise<WynikKontroli> {
+  try {
+    const liczba = await policzDlq(env.DB);
+    return liczba > 0
+      ? { ok: false, opis: `w DLQ outboxu czeka zadań: ${liczba} (SELECT * FROM outbox WHERE hasError = 1)` }
+      : { ok: true, opis: "DLQ outboxu puste" };
+  } catch {
+    // Awarię bazy zgłasza kontrola aplikacji.
+    return { ok: true, opis: "DLQ outboxu: baza niedostępna" };
+  }
+}
+
+/** Kontrola + decyzja o alercie. Zwraca wynik kontroli aplikacji (do logów i testów). */
 export async function kontrolaZdrowia(env: SrodowiskoZdrowia, o: OpcjeKontroli = {}): Promise<WynikKontroli> {
-  const teraz = o.teraz ?? Date.now();
   const wynik = await sprawdzAplikacje(env);
+  await zalatwWynik(env, NAZWA_KONTROLI, wynik, o);
+  await zalatwWynik(env, NAZWA_KONTROLI_DLQ, await sprawdzDlq(env), o);
+  return wynik;
+}
+
+async function zalatwWynik(env: SrodowiskoZdrowia, nazwa: string, wynik: WynikKontroli, o: OpcjeKontroli): Promise<void> {
+  const teraz = o.teraz ?? Date.now();
   let stan: StanAlertu;
   try {
     stan = (await env.DB.prepare("SELECT consecutiveFailures, alertedAt FROM alert_state WHERE name = ?1")
-      .bind(NAZWA_KONTROLI)
+      .bind(nazwa)
       .first<StanAlertu>()) ?? { consecutiveFailures: 0, alertedAt: 0 };
   } catch (blad) {
     // Bez stanu (zwykle: baza leży) lepiej powiadomić za często niż wcale.
     if (!wynik.ok) await powiadom(env, "problem", `${wynik.opis}; stan alertów niedostępny: ${String(blad)}`, o);
-    return wynik;
+    return;
   }
 
   const nowy: StanAlertu = { consecutiveFailures: 0, alertedAt: 0 };
@@ -106,11 +128,10 @@ export async function kontrolaZdrowia(env: SrodowiskoZdrowia, o: OpcjeKontroli =
         `INSERT INTO alert_state (name, consecutiveFailures, alertedAt) VALUES (?1, ?2, ?3)
          ON CONFLICT (name) DO UPDATE SET consecutiveFailures = excluded.consecutiveFailures, alertedAt = excluded.alertedAt`,
       )
-        .bind(NAZWA_KONTROLI, nowy.consecutiveFailures, nowy.alertedAt)
+        .bind(nazwa, nowy.consecutiveFailures, nowy.alertedAt)
         .run();
     } catch (blad) {
       console.error(JSON.stringify({ alert: "kasa-kino", poziom: "stan-alertow", opis: String(blad) }));
     }
   }
-  return wynik;
 }

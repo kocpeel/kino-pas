@@ -7,7 +7,7 @@ Zamiast „sprawdź, czy wolny, potem zapisz" (dwie osoby zobaczą TAK) każdy z
 
 - **rezerwacja**: `status = 'free' OR (status = 'reserved' AND expiresAt <= now)` + podzapytanie z limitem
   aktywnych rezerwacji e-maila w tym samym zdaniu, więc limit też jest atomowy;
-- **zakup**: `reservationId = ? AND status = 'reserved' AND expiresAt > now`;
+- **bilet po płatności**: fotel wolny albo trzymany przez tę rezerwacją, albo przez cudzą, już wygasłą (sekcja 13);
 - przy 0 zmienionych wierszy **dopiero wtedy** czytamy wiersz, tylko po to, by dobrać komunikat (409 / 429 / 410).
   Poprawność od tego odczytu nie zależy.
 
@@ -40,8 +40,8 @@ Cron jest w osobnym Workerze, bo Worker generowany przez OpenNext obsługuje tyl
   Po opłaceniu rezerwacji powtórka → 409.
 - Równoległe żądania z tym samym kluczem: przegrany UPDATE (0 zmian albo naruszenie unikalności klucza)
   sprawdza jeszcze raz klucz i zwraca rezerwację zwycięzcy.
-- Zakup: idempotentny przez warunek na stanie. **Decyzja: 201 przy pierwszym zakupie, 200 przy powtórce**
-  (zawsze ten sam, zapisany kod).
+- Płatność: `POST /checkout` daje przy każdej próbie tę samą sesję (klucz idempotencji u Stripe'a), a webhook wydaje
+  bilet raz (inbox + warunek na stanie). `POST /purchase` oddaje zawsze ten sam, zapisany kod (200).
 - Formularz trzyma klucz w `sessionStorage` per (seans, fotel), więc ponowienie po timeoucie, nawet po
   odświeżeniu strony, nie tworzy drugiej rezerwacji. Klucz jest usuwany po sukcesie i po odpowiedziach,
   które przesądzają, że rezerwacja nie powstała (400/404/409/422/429).
@@ -51,10 +51,10 @@ Cron jest w osobnym Workerze, bo Worker generowany przez OpenNext obsługuje tyl
 | Mechanizm | Gdzie | Uwagi |
 |---|---|---|
 | Timeout | `resilience/timeout.ts` (serwer, `DB_TIMEOUT_MS`), `klient/api.ts` (8 s, każdy fetch) | Zapytania D1 nie da się anulować, dlatego ponowienia są idempotentne. |
-| Retry | `klient/api.ts` | GET: 3 próby, backoff z pełnym jitterem, szanuje `Retry-After` ≤ 5 s. POST rezerwacji tylko z kluczem. Zakup też (idempotentny przez stan). |
+| Retry | `klient/api.ts` | GET: 3 próby, backoff z pełnym jitterem, szanuje `Retry-After` ≤ 5 s. POST rezerwacji tylko z kluczem. `POST /checkout` też, bo każda próba daje tę samą sesję. |
 | Rate limiting | `resilience/limit-zapytan.ts`, binding Workers Rate Limiting (sito), Durable Object `LimiterZadan` (ścisły) | Osobno IP i e-mail (oba jako skrót SHA-256). Docelowo na IP dwie reguły: 10 prób/min i 12 rezerwacji w czasie TTL, na e-mail 5 prób/min. W trybie oceny etapu tylko 50 prób / 10 s na IP (sekcja 12). Awaria albo brak odpowiedzi limitera w 1 s = przepuszczamy (fail-open). |
 | Limit aktywnych rezerwacji | podzapytanie w UPDATE | Założenie spoza treści zadania. `MAX_ACTIVE_RESERVATIONS_PER_EMAIL=0` wyłącza. |
-| Load shedding + bulkhead | `resilience/przeciazenie.ts` | Osobne pule odczytów i zapisów, priorytety zakup > rezerwacja > szczegóły > lista. Liczniki per izolat (przybliżenie). |
+| Load shedding + bulkhead | `resilience/przeciazenie.ts` | Osobne pule odczytów i zapisów, priorytety płatność (checkout, webhook) > rezerwacja > szczegóły > lista. Liczniki per izolat (przybliżenie). |
 | Fallback | `http/odczyty.ts` | Lista z cache (izolat + Cache API), baner „Pokazujemy dane sprzed chwili", rezerwowanie wyłączone. |
 | Błędy bazy | `http/obsluga-trasy.ts` | Każdy błąd spoza domeny przy pracy z D1 → 503 + `Retry-After`, nigdy 500 ani wiszące żądanie. |
 
@@ -94,7 +94,8 @@ WebSocket wszystkich oglądających mapę tej sali:
 5. Hibernacja: bezczynny obiekt jest usypiany, a Cloudflare trzyma połączenia. „ping" co 40 s (podtrzymanie przez
    pośredników) dostaje automatyczne „pong" bez budzenia obiektu.
 
-Zakup nie zmienia zbioru zajętych foteli (rezerwacja → zakup), więc nie powiadamia sali. Awaria kanału nie psuje rezerwacji.
+Płatność zwykle nie zmienia zbioru zajętych foteli (rezerwacja → zakup), więc powiadamia salę tylko wtedy, gdy bilet powstał
+po sprzątaniu Crona i fotel wrócił do zajętych. Awaria kanału nie psuje rezerwacji.
 Formularz rezerwacji słucha tego samego kanału: gdy ktoś inny zarezerwuje „jego" fotel, od razu pokazuje
 „Ten fotel właśnie zajął ktoś inny", blokuje wysyłkę i daje „Wróć do mapy", a po zwolnieniu fotela sam się odblokowuje.
 Własna rezerwacja nie jest brana za cudzą: serwer potrafi rozesłać zmianę przed odpowiedzią na nasze żądanie,
@@ -140,11 +141,9 @@ odpowie 409.
 
 ## 8. Dane między ekranami
 
-Kontrakt nie ma GET rezerwacji, więc `eventId`, `seatId` i `reservationId` są w adresie, a `expiresAt`, imię,
-e-mail i kod w `sessionStorage` (z `try/catch`). Dane osobowe nigdy nie trafiają do URL. Bilet otwarty w nowej
-karcie tej samej przeglądarki odtwarza kod idempotentnym POST zakupu.
-Uwaga: dla jeszcze nieopłaconej, ważnej rezerwacji wejście na `/bilet/:id` ją kupi, bo tak działa
-zakup bez płatności w Etapie I; do strony biletu prowadzi tylko udany zakup.
+`eventId`, `seatId` i `reservationId` są w adresie. Stan rezerwacji (status, kwota, czas, kod) daje od etapu II
+`GET /api/reservations/:id`, więc nowa karta i powrót ze Stripe'a działają bez `sessionStorage`. Tam zostają tylko imię
+i e-mail do podsumowania (z `try/catch`). Dane osobowe nigdy nie trafiają do URL.
 
 ## 9. Testy: co dowodzą, a czego nie
 
@@ -152,7 +151,10 @@ Lokalny D1 serializuje zapisy, więc testy W1–W6 dowodzą poprawności **warun
 pod prawdziwym opóźnieniem sieci. Do tego jest test obciążeniowy na osobnym środowisku w Cloudflare
 (`tests/obciazenie/obciazenie.mjs`, Worker `kasa-kino-staging` z bazą `kasa-kino-db-staging`, limity na IP/e-mail
 wyłączone, load shedding jak na produkcji). Klienci zachowują się jak przeglądarka: własny `Idempotency-Key`,
-ponowienie po 503 z tym samym kluczem. Wynik z 25.10.2026, dwa przebiegi na świeżych danych, oba 12/12:
+ponowienie po 503 z tym samym kluczem. Tabela to wynik etapu I z 25.10.2026 (dwa przebiegi na świeżych danych, oba 12/12).
+Po etapie II, 1.11.2026: 19/19, a doszły W3 z prawdziwym Stripe'em (20 równoległych „Zapłać”: tylko 200 i jedna sesja,
+p95 1,3 s), W4 (20 × ten sam webhook: jeden bilet, p95 0,4 s) i W5 (płatność w wyścigu z nową rezerwacją: zawsze jeden
+właściciel, a przegrana płatność czeka na zwrot).
 
 | Scenariusz | Wynik | Czasy (p50 / p95) |
 |---|---|---|
@@ -169,6 +171,7 @@ uruchomienia z kilku maszyn.
 
 - Next.js 16 + `@opennextjs/cloudflare` 1.20, Wrangler 4, D1, Rate Limiting binding.
 - `@cloudflare/vitest-pool-workers` zostało przemianowane na `@cloudflare/vitest-plugin` (API `cloudflareTest()`).
+- `stripe` 23 (API `2026-10-28`) przez `createFetchHttpClient`, bo ten sam kod działa w Workerze i w `next dev`.
 - Bez `.npmrc`. Wcześniej było tam `legacy-peer-deps=true`, bo npm 10 wywracał się na drzewie peer-dependencies
   Vitest 4 (`Cannot read properties of null (reading 'edgesOut')`). Na npm 10.9.8 `npm ci`, `npm install` oraz
   dodanie i usunięcie paczki działają bez tej flagi (sprawdzone na czystej kopii), więc obejście usunięto.
@@ -204,3 +207,49 @@ bez ciasteczek. Wynik 11/11: A1 404; A2 fotel znika 43 ms po `expiresAt`; B1 ta 
 po kolei i równolegle; B2 1 × 201 + 19 × 409; B3 400/404 i nic nie zapisane; B4 nowa rezerwacja 96 ms po `expiresAt`;
 B5 23 × 201 + 77 × 429 (Retry-After 6–10 s), drugi klient 201; C1 ten sam kod; C2 5/5 jeden właściciel; C3 410 i 400;
 C4 410, kupione miejsce dalej zajęte.
+
+## 13. Etap II: płatność przez Stripe
+
+Pełna droga jest w [kontrakt-wewnetrzny.md](kontrakt-wewnetrzny.md), a zagrożenia w [zagrozenia.md](zagrozenia.md).
+Tu są decyzje, które nie wynikają wprost z treści zadania.
+
+**Sesja żyje dłużej niż rezerwacja.** Stripe wymaga co najmniej 30 minut, a rezerwacja ma docelowo 15 (w trybie oceny 2). Nie przedłużamy
+rezerwacji na czas płatności, bo złamałoby to obietnicę `expiresAt` (mapa ma zwolnić fotel). Płatność po czasie zawsze
+wraca do klienta, także gdy fotel jest wolny: reguła jest prosta, a „bilet po czasie” nie powstaje nigdy.
+Klient zapłacił na czas, ale webhook się spóźnił? Liczy się `event.created`, więc dostaje bilet, chyba że fotel ma już żywego
+właściciela. Wtedy on zostaje, a pieniądze wracają: zawsze jeden właściciel.
+
+**Historia rezerwacji w osobnej tabeli.** Etap I jej nie potrzebował (plan: „raczej zbędne”). Etap II wymaga statusu
+`expired` po przejęciu fotela i rozpoznania spóźnionej płatności, a stare `reservationId` znika z `seats`. Zajmowanie
+fotela dalej jest jednym warunkowym `UPDATE`; wpis do historii idzie w tym samym `batch` i powstaje tylko, gdy ten
+`UPDATE` się udał.
+
+**Webhook i strażnik.** Zadanie mówi o webhooku, ale Stripe w trybie testowym ponawia krótko, a zły adres endpointu
+to cicha awaria. Strażnik sesji (job w outboxie) raz na minutę pyta o stan otwartej sesji i rozlicza płatność tą samą
+funkcją co webhook. To kosztuje najwyżej jedno zapytanie na minutę na otwartą sesję i kończy się, gdy rezerwacja jest
+opłacona. `GET /api/reservations/:id` celowo nie pyta Stripe'a: strona odpytuje co kilka sekund.
+
+**`POST /purchase` nie sprzedaje.** Gdyby działał jak w etapie I, płatność można by ominąć jednym żądaniem. Zostaje,
+żeby stare wywołania dostawały jasną odpowiedź: kod opłaconej rezerwacji albo 402.
+
+**Kod po samym identyfikatorze.** Sekret rezerwacji wycofano w sekcji 12, więc kod biletu dostaje każdy, kto zna
+`reservationId` (losowy UUID): klient API, strona powrotu i otwarty link. `session_id` w adresie powrotu nie jest
+przepustką, mówi stronie tylko, że klient wraca z płatności.
+
+**SDK zamiast własnego klienta.** Oficjalne `stripe` waży 33 KB po kompresji i działa w Workerze przez `createFetchHttpClient`
+i `constructEventAsync` (w Workerach podpis jest asynchroniczny, więc nie `constructEvent` z treści zadania).
+
+**Co sprawdzono na prawdziwym sandboksie (1.11.2026).** Aplikacja na localhost, karty z zadania, przeglądarka Edge:
+`4242…` daje bilet, `4000…0002` odmowę na stronie Stripe'a, a rezerwacja dalej trzyma fotel; `4000…3155` przechodzi przez
+3D Secure. Przerwanie wraca do tej samej sesji. Z prawdziwym Cronem: płatność bez webhooka rozlicza strażnik, płatność po
+czasie daje jeden prawdziwy zwrot (także po drugim przebiegu), a otwarta sesja zostaje wygaszona. Wcześniejsze założenia
+też wyszły z sandboksu: API 2026-10 nie przyjmuje `payment_method_types`, `expires_at` poniżej 30 minut to błąd, a ten sam
+klucz z innymi parametrami to `StripeIdempotencyError`. Te reguły trzymają też sztuczne bramki w testach.
+
+**Testy bez sieci.** CI nie ma sekretów, więc integracyjne używają sztucznej bramki, a e2e sztucznego Stripe'a przez
+prawdziwe SDK (`tests/e2e/sztuczny-stripe.mjs`). Podpis webhooka zawsze jest prawdziwy.
+
+**Prawdziwe dostarczenie webhooka.** Lokalnie zdarzenia przekazuje `npm run stripe:nasluch`, a staging ma własny sekret
+bez endpointu w panelu. Na produkcji (1.11.2026) Stripe dostarczył dwa zdarzenia `checkout.session.expired`: obie
+odpowiedzi 200, `pending_webhooks` 0. Ścieżkę biletu sprawdziło tam zdarzenie podpisane sekretem produkcji, a płatność
+kartą robi człowiek.

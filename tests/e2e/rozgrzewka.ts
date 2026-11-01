@@ -8,10 +8,10 @@ const UUID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 /** Pierwsza kompilacja trasy w CI trwa kilkanaście sekund; zawieszona trasa ma przerwać przebieg z nazwą adresu. */
 const LIMIT_TRASY_MS = 90_000;
 
-async function wejdz(adres: string): Promise<Response> {
+async function wejdz(adres: string, method = "GET"): Promise<Response> {
   const start = Date.now();
   try {
-    const odp = await fetch(`${BAZA}${adres}`, { signal: AbortSignal.timeout(LIMIT_TRASY_MS) });
+    const odp = await fetch(`${BAZA}${adres}`, { method, signal: AbortSignal.timeout(LIMIT_TRASY_MS) });
     await odp.arrayBuffer();
     console.log(`[rozgrzewka] ${odp.status} ${adres} (${Date.now() - start} ms)`);
     return odp;
@@ -36,4 +36,8 @@ export default async function rozgrzewka(): Promise<void> {
     `/api/events/${seans}`,
   ];
   for (const adres of adresy) await wejdz(adres);
+  // Trasy płatności: nieznana rezerwacja i webhook bez podpisu odpowiedzą 4xx, ale się skompilują.
+  await wejdz(`/api/reservations/${UUID}`);
+  await wejdz(`/api/reservations/${UUID}/checkout`, "POST");
+  await wejdz("/api/webhooks/stripe", "POST");
 }

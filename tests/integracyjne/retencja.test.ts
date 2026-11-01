@@ -3,7 +3,8 @@
 import { createExecutionContext, createScheduledController, env, waitOnExecutionContext } from "cloudflare:test";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { SEANSE } from "../../seed/generuj-seed";
-import cron, { CRON_RETENCJI, retencja } from "../../workers/sprzatanie/src/index";
+import cron from "../../workers/sprzatanie/src/index";
+import { CRON_RETENCJI, retencja } from "../../workers/sprzatanie/src/zadania";
 import { INNY_SEANS, kup, SEANS, wierszMiejsca, zarezerwuj, zasiej, zaleznosci } from "./pomocnicze";
 
 const DOBA_MS = 24 * 60 * 60 * 1000;

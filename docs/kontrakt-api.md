@@ -1,6 +1,7 @@
-# Kontrakt API (Etap I)
+# Kontrakt API (etapy I i II)
 
 Wszystkie odpowiedzi to JSON (`application/json; charset=utf-8`). Czasy w `expiresAt` to epoch ms (UTC) z zegara serwera.
+Kwoty (`price`, `amount`) to grosze, waluta PLN: 3200 to 32 zł. Konwencja: 2xx sukces, 4xx odmowa z komunikatem, 5xx błąd serwera.
 Błędy mają zawsze ten sam kształt:
 
 ```json
@@ -18,9 +19,12 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
 |---|---|---|---|
 | GET | `/api/events` | 200 `SeansNaLiscie[]`, 304 | 503 |
 | GET | `/api/events/:id` | 200 `{ event, takenSeats }`, 304 | 404, 503 |
-| POST | `/api/reservations` | 201 `{ reservationId, expiresAt }` | 400, 404, 409, 413, 422, 429, 503 |
-| POST | `/api/reservations/:id/purchase` | 201 `{ code }` (pierwszy zakup), 200 `{ code }` (powtórka) | 400, 410, 503 |
-| GET | `/api/zdrowie` (poza kontraktem Etapu I, do monitoringu) | 200 `{ status: "ok" \| "degraded", db: { latencyMs, avgLatencyMs }, loadShedding: { capacity } }` | 503 |
+| POST | `/api/reservations` | 201 `{ reservationId, expiresAt, amount }` | 400, 404, 409, 413, 422, 429, 503 |
+| GET | `/api/reservations/:id` | 200 `{ status, amount, expiresAt, code? }` | 400, 404, 503 |
+| POST | `/api/reservations/:id/checkout` | 200 `{ url }` | 400, 404, 409, 410, 503 |
+| POST | `/api/webhooks/stripe` | 200 `{ received: true }` | 400, 413, 503 |
+| POST | `/api/reservations/:id/purchase` | 200 `{ code }` opłaconej rezerwacji | 400, 402, 410, 503 |
+| GET | `/api/zdrowie` (poza kontraktem, do monitoringu) | 200 `{ status: "ok" \| "degraded", db: { latencyMs, avgLatencyMs }, loadShedding: { capacity }, payments: { configured } }` | 503 |
 
 ### GET /api/events
 
@@ -33,6 +37,7 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
     "hall": "Sala 1",
     "rowsCount": 8,
     "seatsPerRow": 10,
+    "price": 3200,
     "totalSeats": 80,
     "freeSeats": 78
   }
@@ -50,7 +55,7 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
 ```json
 {
   "event": { "id": "metropolis-2026-11-06", "movie": "Metropolis", "startsAt": "2026-11-06T18:30:00.000Z",
-             "hall": "Sala 1", "rowsCount": 8, "seatsPerRow": 10 },
+             "hall": "Sala 1", "rowsCount": 8, "seatsPerRow": 10, "price": 3200 },
   "takenSeats": ["F7", "D5"]
 }
 ```
@@ -70,10 +75,11 @@ Nagłówki: `Content-Type: application/json` (wymagany), `Idempotency-Key` (zale
 - `seatId` to tekst „F7" walidowany względem układu sali A–H × 1–10 (wielkie litery; `f7` → 400).
 - `name`: 2–80 znaków po scaleniu białych znaków. `email`: normalizowany do małych liter, bez spacji dookoła.
 - Limit ciała: 4 KiB (413).
+- `amount` to cena z chwili rezerwacji. Późniejsza zmiana `price` jej nie rusza, a płatność idzie zawsze na tę kwotę.
 
 | Kod | `error` | Kiedy |
 |---|---|---|
-| 201 | – | `{ reservationId, expiresAt }`. Powtórka (ten sam klucz albo identyczne żądanie, niżej) zwraca to samo + nagłówek `Idempotent-Replayed: true`. |
+| 201 | – | `{ reservationId, expiresAt, amount }`. Powtórka (ten sam klucz albo identyczne żądanie, niżej) zwraca to samo + nagłówek `Idempotent-Replayed: true`. |
 | 400 | `invalid_input` | Zły JSON, brak pól, nieznany fotel, zły `Idempotency-Key`. |
 | 404 | `not_found` | Nie ma takiego seansu. |
 | 409 | `seat_taken` | Fotel zajęty (albo rezerwacja z tym kluczem została już opłacona). |
@@ -89,18 +95,64 @@ Powtórka z tym samym kluczem **po wygaśnięciu** pierwszej rezerwacji jest tra
 (bez `Idempotency-Key` albo z innym kluczem) dostaje tę samą rezerwację zamiast 409: to podwójne kliknięcie albo
 ponowienie. Inne imię lub e-mail na zajętym fotelu → 409.
 
-Odpowiedzi nie ustawiają ciasteczek: cała ścieżka (rezerwacja → zakup) działa z samym `reservationId`, jak we wspólnym
+Odpowiedzi nie ustawiają ciasteczek: cała ścieżka (rezerwacja → płatność → kod) działa z samym `reservationId`, jak we wspólnym
 kontrakcie. Identyfikator to losowy UUID v4 (122 bity), więc nie da się go zgadnąć.
 
-### POST /api/reservations/:id/purchase
+### GET /api/reservations/:id
 
-Bez ciała. Idempotentny przez warunek na stanie:
+Stan rezerwacji, bez pytania Stripe'a. Przez to strona powrotu nie czeka ani na kartę A, ani na B.
+
+```json
+{ "status": "paid", "amount": 3200, "expiresAt": 1793563812419, "code": "WGHZ-VJ4X" }
+```
+
+| `status` | Kiedy |
+|---|---|
+| `held` | Rezerwacja trzyma fotel (`expiresAt > teraz`), jeszcze nie opłacona. |
+| `paid` | Opłacona. `code` to kod biletu. |
+| `expired` | Rezerwacja wygasła: także gdy fotel ma już nowego właściciela. |
+
+Pole `refund` pojawia się tylko, gdy płatność nie dała biletu (np. przyszła po `expiresAt`): `pending` albo `done`,
+a `failed`, gdy automatyczny zwrot się nie udał. Nieznana rezerwacja: 404 `not_found`. Zły identyfikator: 400 `invalid_input`.
+
+### POST /api/reservations/:id/checkout
+
+Bez ciała. Tworzy sesję Stripe Checkout z kwotą z rezerwacji i zwraca `{ url }` strony płatności. Ponowienie, podwójne
+kliknięcie i powrót po przerwanej płatności dają **tę samą** sesję.
+
+| Kod | `error` | Kiedy |
+|---|---|---|
+| 200 | – | `{ url }`. |
+| 400 | `invalid_input` | `:id` nie jest UUID. |
+| 404 | `not_found` | Nie ma takiej rezerwacji. |
+| 409 | `reservation_already_paid` | Rezerwacja jest już opłacona. |
+| 410 | `reservation_expired` | Rezerwacja wygasła. |
+| 503 | `payments_unavailable` | Stripe nie odpowiada albo płatności nie są skonfigurowane. Rezerwacja dalej trzyma fotel, a ponowienie jest bezpieczne. Ma `Retry-After`. |
+
+Sesja żyje co najmniej 30 minut, czyli dłużej niż rezerwacja. Po wygaśnięciu rezerwacji sesję wygasza strażnik
+(najpóźniej około minuty), a płatność, która mimo to zdąży, wraca do klienta i nie daje biletu.
+
+### POST /api/webhooks/stripe
+
+Zdarzenia od Stripe'a. Wymaga poprawnego nagłówka `Stripe-Signature` (podpis surowego ciała, tolerancja 5 min).
+Obsługiwane: `checkout.session.completed` i `checkout.session.async_payment_succeeded`, o ile `payment_status` to `paid`.
 
 | Kod | Kiedy |
 |---|---|
-| 201 `{ code }` | Pierwszy udany zakup (rezerwacja ważna: `expiresAt > teraz`). |
-| 200 `{ code }` | Bilet już kupiony tą rezerwacją: zwracamy **zapisany** kod (retry, podwójne kliknięcie). |
+| 200 `{ received: true }` | Obsłużone, także duplikat, inny typ zdarzenia i zdarzenie o cudzej rezerwacji. Stripe przestaje ponawiać. |
+| 400 `invalid_signature` | Brak albo zły podpis, za stary znacznik czasu. Nic się nie zmienia. |
+| 413 `payload_too_large` | Ciało > 1 MiB. |
+| 503 | Baza niedostępna albo brak sekretu webhooka. Stripe ponowi. |
+
+### POST /api/reservations/:id/purchase
+
+Bez ciała. Od etapu II zakup to płatność, więc ten endpoint nie wydaje biletu, tylko oddaje kod opłaconej rezerwacji.
+
+| Kod | Kiedy |
+|---|---|
+| 200 `{ code }` | Rezerwacja opłacona: **zapisany** kod, za każdym razem ten sam. |
 | 400 `invalid_input` | `:id` nie jest UUID. |
+| 402 `payment_required` | Rezerwacja jest ważna, ale nieopłacona. |
 | 410 `reservation_expired` | Rezerwacja wygasła albo nigdy nie istniała (celowo ten sam komunikat). |
 | 503 | Przeciążenie albo baza niedostępna. Bezpieczne do ponowienia. |
 
@@ -130,4 +182,4 @@ z `If-None-Match`. Klient może wysyłać `ping` (podtrzymanie), serwer odpowiad
 
 ## Priorytety pod obciążeniem
 
-zakup > rezerwacja > szczegóły > lista. Odczyty i zapisy mają osobne pule (bulkhead); 25% puli zapisów jest zarezerwowane dla zakupów.
+płatność (checkout i webhook) > rezerwacja > szczegóły > lista. Odczyty i zapisy mają osobne pule (bulkhead); 25% puli zapisów jest zarezerwowane dla płatności.

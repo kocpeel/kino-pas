@@ -1,5 +1,5 @@
-// C. Bilet. Dane seansu renderuje serwer, kod dostarcza klient (sessionStorage albo
-// idempotentny POST zakupu, który zwraca zapisany kod).
+// C. Bilet i strona powrotu po płatności. Dane seansu renderuje serwer, a klient czyta status rezerwacji:
+// „płatność w toku…” sama zamienia się w bilet z kodem, gdy dotrze webhook.
 
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
@@ -46,7 +46,15 @@ export default async function StronaBiletu({ params, searchParams }: Props) {
   return (
     <>
       <Kroki aktywny={4} />
-      <AkcjeBiletu reservationId={reservationId} dane={dane} />
+      <AkcjeBiletu
+        reservationId={reservationId}
+        dane={dane}
+        sesjaStripe={parametr(zapytanie.session_id)}
+        adresRezerwacji={`/rezerwacja/${reservationId}?${new URLSearchParams({
+          ...(eventId ? { seans: eventId } : {}),
+          ...(miejsce ? { miejsce: `${miejsce.rzad}${miejsce.numer}` } : {}),
+        })}`}
+      />
     </>
   );
 }

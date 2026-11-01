@@ -1,11 +1,24 @@
 // W1–W6: współbieżność na prawdziwym D1. Uczciwie: lokalny D1 serializuje zapisy, więc te testy
 // dowodzą poprawności WARUNKÓW w zapytaniach (jedno warunkowe UPDATE zamiast „sprawdź, potem zapisz"),
-// a nie zachowania pod prawdziwym opóźnieniem sieci. Do tego służy skrypt k6 w tests/obciazenie.
+// a nie zachowania pod prawdziwym opóźnieniem sieci. Do tego służy test w tests/obciazenie.
 
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { utworzZegarTestowy } from "../../src/lib/czas";
-import { kup, liczStatusy, SEANS, TTL_MS, wierszMiejsca, zarezerwuj, zasiej, zaleznosci } from "./pomocnicze";
+import {
+  liczStatusy,
+  odbierzKod,
+  SEANS,
+  stanRezerwacji,
+  TTL_MS,
+  wierszMiejsca,
+  wyslijZdarzenie,
+  zaplac,
+  zarezerwuj,
+  zasiej,
+  zaleznosci,
+  zdarzenieOplacenia,
+} from "./pomocnicze";
 
 beforeEach(() => zasiej());
 
@@ -40,66 +53,68 @@ describe("W2: 50 równoległych rezerwacji różnych foteli", () => {
   });
 });
 
-describe("W3: dwa równoległe zakupy tej samej rezerwacji", () => {
-  it("oba zwracają ten sam kod, w bazie jeden zakup", async () => {
+describe("W3: równoległe dostarczenia płatności tej samej rezerwacji", () => {
+  it("dwa równoległe webhooki z tym samym zdarzeniem: w bazie jeden zakup", async () => {
     const z = zaleznosci();
     const rezerwacja = await zarezerwuj(z, { seatId: "C3" });
-    const [a, b] = await Promise.all([kup(z, rezerwacja.cialo.reservationId), kup(z, rezerwacja.cialo.reservationId)]);
-    expect([a.status, b.status].sort()).toEqual([200, 201]);
-    expect(a.cialo.code).toBe(b.cialo.code);
+    const zdarzenie = zdarzenieOplacenia(rezerwacja.cialo.reservationId, { paidAt: z.zegar.teraz() });
+    const [a, b] = await Promise.all([wyslijZdarzenie(z, zdarzenie), wyslijZdarzenie(z, zdarzenie)]);
+    expect([a.status, b.status]).toEqual([200, 200]);
 
     const wiersz = await wierszMiejsca("C3");
-    expect(wiersz).toMatchObject({ status: "purchased", code: a.cialo.code, expiresAt: null, version: 2 });
+    expect(wiersz).toMatchObject({ status: "purchased", expiresAt: null, version: 2 });
+    expect((await stanRezerwacji(z, rezerwacja.cialo.reservationId)).cialo.code).toBe(wiersz?.code);
   });
 
-  it("20 równoległych kliknięć w przycisk zakupu daje jeden kod", async () => {
+  it("20 równoległych odbiorów kodu po płatności daje jeden kod", async () => {
     const z = zaleznosci();
     const rezerwacja = await zarezerwuj(z, { seatId: "C4" });
-    const wyniki = await Promise.all(Array.from({ length: 20 }, () => kup(z, rezerwacja.cialo.reservationId)));
+    await zaplac(z, rezerwacja.cialo.reservationId);
+    const wyniki = await Promise.all(Array.from({ length: 20 }, () => odbierzKod(z, rezerwacja.cialo.reservationId)));
     expect(new Set(wyniki.map((w) => w.cialo.code)).size).toBe(1);
-    expect(liczStatusy(wyniki.map((w) => w.status))).toEqual({ 200: 19, 201: 1 });
+    expect(liczStatusy(wyniki.map((w) => w.status))).toEqual({ 200: 20 });
   });
 });
 
-describe("W4: zakup równolegle z wygaśnięciem", () => {
-  it("na granicy expiresAt wynik jest zawsze spójny: albo kod, albo 410, nigdy oba", async () => {
+describe("W4: płatność równolegle z wygaśnięciem", () => {
+  it("na granicy expiresAt wynik jest zawsze spójny: albo bilet, albo nowy właściciel, nigdy oba", async () => {
     const zegarKlienta = utworzZegarTestowy();
     const kupujacy = zaleznosci({ zegar: zegarKlienta });
     const fotele = Array.from({ length: 10 }, (_, i) => `G${i + 1}`);
 
     for (const seatId of fotele) {
       zegarKlienta.ustaw(Date.UTC(2026, 10, 6, 12));
-      const rezerwacja = await zarezerwuj(kupujacy, { seatId, email: "kupujacy@example.com" });
+      const rezerwacja = await zarezerwuj(kupujacy, { seatId, email: `kupujacy-${seatId}@example.com` });
       const { expiresAt, reservationId } = rezerwacja.cialo;
 
-      // Zakup tuż przed granicą i nowa rezerwacja innej osoby dokładnie na granicy, równolegle.
+      // Płatność tuż przed granicą i nowa rezerwacja innej osoby dokładnie na granicy, równolegle.
       const przedGranica = zaleznosci({ zegar: utworzZegarTestowy(expiresAt - 1) });
       const naGranicy = zaleznosci({ zegar: utworzZegarTestowy(expiresAt) });
-      const [zakup, przejecie] = await Promise.all([
-        kup(przedGranica, reservationId),
-        zarezerwuj(naGranicy, { seatId, email: "ktos-inny@example.com" }),
+      const [platnosc, przejecie] = await Promise.all([
+        zaplac(przedGranica, reservationId, { paymentIntent: `pi_${seatId}` }),
+        zarezerwuj(naGranicy, { seatId, email: `ktos-inny-${seatId}@example.com` }),
       ]);
+      expect(platnosc.status).toBe(200);
 
-      const kupiono = zakup.status === 201;
+      const wiersz = await wierszMiejsca(seatId);
+      const kupiono = wiersz?.status === "purchased";
       const przejeto = przejecie.status === 201;
       expect(kupiono !== przejeto).toBe(true);
-      const wiersz = await wierszMiejsca(seatId);
-      expect(wiersz?.status).toBe(kupiono ? "purchased" : "reserved");
-      if (!kupiono) expect(zakup.status).toBe(410);
+      expect(wiersz?.reservationId).toBe(kupiono ? reservationId : przejecie.cialo.reservationId);
       if (!przejeto) expect(przejecie.status).toBe(409);
     }
   });
 
-  it("zakup dokładnie w chwili expiresAt jest odrzucony (410), 1 ms wcześniej przechodzi", async () => {
+  it("płatność dokładnie w chwili expiresAt nie daje biletu, a sekundę wcześniej daje", async () => {
     const zegar = utworzZegarTestowy();
     const z = zaleznosci({ zegar });
     const a = await zarezerwuj(z, { seatId: "H1" });
     const b = await zarezerwuj(z, { seatId: "H2", email: "b@example.com" });
 
-    zegar.ustaw(a.cialo.expiresAt);
-    expect((await kup(z, a.cialo.reservationId)).status).toBe(410);
-    zegar.ustaw(b.cialo.expiresAt - 1);
-    expect((await kup(z, b.cialo.reservationId)).status).toBe(201);
+    await zaplac(z, a.cialo.reservationId, { paidAt: a.cialo.expiresAt });
+    expect((await wierszMiejsca("H1"))?.status).toBe("reserved");
+    await zaplac(z, b.cialo.reservationId, { paidAt: b.cialo.expiresAt - 1000 });
+    expect((await wierszMiejsca("H2"))?.status).toBe("purchased");
   });
 });
 

@@ -9,10 +9,16 @@ import { ustawWidocznosc } from "./przygotuj";
 vi.mock("next/navigation", () => mockNavigation());
 vi.mock("next/link", () => mockLink());
 
-const kupBilet = vi.fn();
+const utworzPlatnosc = vi.fn();
+const pobierzRezerwacje = vi.fn();
+const przejdzDoPlatnosci = vi.fn();
 vi.mock("@/lib/klient/api", async (oryginal) => ({
   ...(await oryginal<typeof import("@/lib/klient/api")>()),
-  kupBilet: (...argumenty: unknown[]) => kupBilet(...argumenty),
+  utworzPlatnosc: (...argumenty: unknown[]) => utworzPlatnosc(...argumenty),
+  pobierzRezerwacje: (...argumenty: unknown[]) => pobierzRezerwacje(...argumenty),
+}));
+vi.mock("@/lib/klient/przekierowanie", () => ({
+  przejdzDoPlatnosci: (url: string) => przejdzDoPlatnosci(url),
 }));
 
 const { Licznik } = await import("@/components/rezerwacja/Licznik");
@@ -26,6 +32,7 @@ function zarezerwowano(naIleMs: number) {
     eventId: "metropolis",
     seatId: "F7",
     expiresAt: START + naIleMs,
+    amount: 3200,
     utworzono: START,
     przesuniecieZegara: 0,
     name: "Jan",
@@ -33,20 +40,35 @@ function zarezerwowano(naIleMs: number) {
   });
 }
 
-function renderuj() {
+/** Serwer potwierdza rezerwację z tym samym czasem co sessionStorage. */
+function serwerTrzyma(naIleMs: number) {
+  pobierzRezerwacje.mockResolvedValue({
+    dane: { status: "held", amount: 3200, expiresAt: START + naIleMs },
+    status: 200,
+    przesuniecieZegara: 0,
+    etag: null,
+  });
+}
+
+function renderuj(przerwano = false) {
   return render(
     <Licznik
       reservationId={ID}
       eventId="metropolis"
       seatId="F7"
       seans={{ movie: "Metropolis", hall: "Sala 1", termin: "pt 6.11 · 19:30" }}
+      przerwano={przerwano}
     />,
   );
 }
 
 beforeEach(() => {
-  kupBilet.mockReset();
+  utworzPlatnosc.mockReset();
+  pobierzRezerwacje.mockReset();
+  pobierzRezerwacje.mockRejectedValue(new BladApi(0, "network", "Brak połączenia"));
+  przejdzDoPlatnosci.mockReset();
   router.push.mockReset();
+  router.replace.mockReset();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
   vi.setSystemTime(START);
 });
@@ -84,7 +106,7 @@ describe("Licznik", () => {
     expect(screen.getByRole("heading", { level: 1 })).not.toHaveClass("licznik--ostrzezenie");
     await act(() => vi.advanceTimersByTimeAsync(1_010));
     expect(screen.getByRole("heading", { level: 1 })).toHaveClass("licznik--ostrzezenie");
-    expect(screen.getByText("Została mniej niż minuta na zakup biletu.")).toBeInTheDocument();
+    expect(screen.getByText("Została mniej niż minuta na płatność.")).toBeInTheDocument();
   });
 
   it("po zerze przełącza się na stan wygasła z przyciskiem wyboru innego fotela", async () => {
@@ -93,7 +115,7 @@ describe("Licznik", () => {
     await act(() => vi.advanceTimersByTimeAsync(3_100));
     expect(screen.getByRole("heading", { name: "Rezerwacja wygasła, fotel wrócił do puli" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Wybierz inny fotel" })).toHaveAttribute("href", "/seans/metropolis");
-    expect(screen.queryByRole("button", { name: /Kupuję bilet/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Zapłać/ })).not.toBeInTheDocument();
   });
 
   it("po powrocie na kartę od razu pokazuje poprawny czas (przeskok zegara)", async () => {
@@ -108,34 +130,129 @@ describe("Licznik", () => {
     expect(screen.getByRole("timer")).toHaveTextContent("03:00");
   });
 
-  it("410 z serwera przy zakupie: stan wygasła, bo decyduje serwer", async () => {
+  it("przycisk pokazuje cenę, a kliknięcie prowadzi na stronę płatności; podwójne = jedna sesja", async () => {
     zarezerwowano(120_000);
-    kupBilet.mockRejectedValue(new BladApi(410, "reservation_expired", "Rezerwacja wygasła, fotel wrócił do puli."));
+    serwerTrzyma(120_000);
+    utworzPlatnosc.mockResolvedValue({ url: "https://checkout.stripe.test/c/pay/cs_1" });
     renderuj();
     await act(() => vi.advanceTimersByTimeAsync(0));
-    fireEvent.click(screen.getByRole("button", { name: "Kupuję bilet" }));
+    expect(screen.getByText("32 zł")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Zapłać 32 zł" }));
+    fireEvent.click(screen.getByRole("button", { name: /Przechodzę do płatności/ }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(utworzPlatnosc).toHaveBeenCalledTimes(1);
+    expect(przejdzDoPlatnosci).toHaveBeenCalledWith("https://checkout.stripe.test/c/pay/cs_1");
+    // Przycisk zostaje zablokowany do końca nawigacji.
+    expect(screen.getByRole("button", { name: /Przechodzę do płatności/ })).toBeDisabled();
+  });
+
+  it("powrót z przerwanej płatności: komunikat i można zapłacić jeszcze raz", async () => {
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    renderuj(true);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("Płatność przerwana")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Zapłać 32 zł" })).toBeEnabled();
+  });
+
+  it("Wstecz ze strony Stripe'a (strona z pamięci przeglądarki): przycisk znów działa", async () => {
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    utworzPlatnosc.mockResolvedValue({ url: "https://checkout.stripe.test/c/pay/cs_1" });
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    fireEvent.click(screen.getByRole("button", { name: "Zapłać 32 zł" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole("button", { name: /Przechodzę do płatności/ })).toBeDisabled();
+
+    await act(async () => {
+      window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+    expect(screen.getByRole("button", { name: "Zapłać 32 zł" })).toBeEnabled();
+    expect(pobierzRezerwacje).toHaveBeenCalledTimes(2);
+  });
+
+  it("410 z serwera przy płatności: stan wygasła, bo decyduje serwer", async () => {
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    utworzPlatnosc.mockRejectedValue(new BladApi(410, "reservation_expired", "Rezerwacja wygasła, fotel wrócił do puli."));
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    fireEvent.click(screen.getByRole("button", { name: "Zapłać 32 zł" }));
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByRole("heading", { name: "Rezerwacja wygasła, fotel wrócił do puli" })).toBeInTheDocument();
   });
 
-  it("udany zakup zapisuje kod i przechodzi do biletu", async () => {
+  it("już opłacona: od razu do biletu", async () => {
     zarezerwowano(120_000);
-    kupBilet.mockResolvedValue({ code: "ABCD-1234" });
+    serwerTrzyma(120_000);
+    utworzPlatnosc.mockRejectedValue(new BladApi(409, "reservation_already_paid", "Ta rezerwacja jest już opłacona."));
     renderuj();
     await act(() => vi.advanceTimersByTimeAsync(0));
-    fireEvent.click(screen.getByRole("button", { name: "Kupuję bilet" }));
-    fireEvent.click(screen.getByRole("button", { name: /Kupuję/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Zapłać 32 zł" }));
     await act(() => vi.advanceTimersByTimeAsync(0));
-    expect(kupBilet).toHaveBeenCalledTimes(1);
-    expect(router.push).toHaveBeenCalledWith(`/bilet/${ID}?seans=metropolis&miejsce=F7`);
-    expect(sessionStorage.getItem(`kasa-kino:bilet:${ID}`)).toContain("ABCD-1234");
+    expect(router.replace).toHaveBeenCalledWith(`/bilet/${ID}?seans=metropolis&miejsce=F7`);
   });
 
-  it("bez danych w sessionStorage nie wybucha i pozwala spróbować kupić", async () => {
+  it("Stripe niedostępny: komunikat, rezerwacja bezpieczna, a przycisk ponawia", async () => {
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    utworzPlatnosc.mockRejectedValue(new BladApi(503, "payments_unavailable", "Płatności są chwilowo niedostępne."));
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    fireEvent.click(screen.getByRole("button", { name: "Zapłać 32 zł" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole("alert")).toHaveTextContent("Płatności są chwilowo niedostępne");
+    expect(screen.getByRole("button", { name: "Spróbuj ponownie: Zapłać 32 zł" })).toBeEnabled();
+    expect(screen.getByRole("timer")).toBeInTheDocument();
+  });
+
+  it("serwer mówi, że opłacona: strona sama przechodzi do biletu", async () => {
+    pobierzRezerwacje.mockResolvedValue({
+      dane: { status: "paid", amount: 3200, expiresAt: START + 120_000, code: "ABCD-1234" },
+      status: 200,
+      przesuniecieZegara: 0,
+      etag: null,
+    });
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(router.replace).toHaveBeenCalledWith(`/bilet/${ID}?seans=metropolis&miejsce=F7`);
+  });
+
+  it("serwer mówi, że wygasła po zapłacie po czasie: stan wygasła z informacją o zwrocie", async () => {
+    pobierzRezerwacje.mockResolvedValue({
+      dane: { status: "expired", amount: 3200, expiresAt: START - 1000, refund: "pending" },
+      status: 200,
+      przesuniecieZegara: 0,
+      etag: null,
+    });
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole("heading", { name: "Rezerwacja wygasła, fotel wrócił do puli" })).toBeInTheDocument();
+    expect(screen.getByText(/Pieniądze wracają na Twoją kartę/)).toBeInTheDocument();
+  });
+
+  it("nowa karta bez sessionStorage: licznik i cena z serwera", async () => {
+    serwerTrzyma(90_000);
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole("timer")).toHaveTextContent("01:30");
+    expect(screen.getByRole("button", { name: "Zapłać 32 zł" })).toBeEnabled();
+  });
+
+  it("nieznana rezerwacja (404): komunikat zamiast licznika", async () => {
+    pobierzRezerwacje.mockRejectedValue(new BladApi(404, "not_found", "Nie ma takiej rezerwacji."));
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole("heading", { name: "Nie znaleźliśmy tej rezerwacji" })).toBeInTheDocument();
+  });
+
+  it("serwer nieosiągalny i brak sessionStorage: nie wybucha i pozwala spróbować zapłacić", async () => {
     renderuj();
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByText("Nie widzimy czasu ważności tej rezerwacji")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Kupuję bilet" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Zapłać" })).toBeEnabled();
   });
 
   it("po odmontowaniu nie zostaje żaden timer", async () => {
@@ -144,5 +261,16 @@ describe("Licznik", () => {
     await act(() => vi.advanceTimersByTimeAsync(2_000));
     unmount();
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("po odmontowaniu nie słucha już zdarzenia pageshow", async () => {
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    const { unmount } = renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    unmount();
+    pobierzRezerwacje.mockClear();
+    window.dispatchEvent(new PageTransitionEvent("pageshow", { persisted: true }));
+    expect(pobierzRezerwacje).not.toHaveBeenCalled();
   });
 });

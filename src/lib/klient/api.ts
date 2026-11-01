@@ -1,7 +1,7 @@
 // Klient API dla przeglądarki: timeout na każdym fetchu, ponawianie GET z backoffem
 // i jitterem, POST rezerwacji ponawiany tylko z tym samym Idempotency-Key.
 
-import type { KupionyBilet, SzczegolySeansu, UtworzonaRezerwacja } from "../domain/typy";
+import type { SesjaPlatnosci, StanRezerwacji, SzczegolySeansu, UtworzonaRezerwacja } from "../domain/typy";
 
 export const TIMEOUT_MS = 8000;
 const BAZA_BACKOFF_MS = 300;
@@ -209,15 +209,26 @@ export function utworzRezerwacje(
   );
 }
 
-/** Zakup jest idempotentny przez warunek na stanie (powtórka zwraca ten sam kod), więc można go ponawiać. */
-export function kupBilet(reservationId: string, opcje: OpcjeZadania = {}): Promise<KupionyBilet> {
+/** Stan rezerwacji z serwera. */
+export function pobierzRezerwacje(reservationId: string, opcje: OpcjeZadania = {}): Promise<Odpowiedz<StanRezerwacji>> {
   const { sygnal, proby = 3, timeoutMs } = opcje;
   return zPonowieniami(proby, sygnal, () =>
-    wykonaj<KupionyBilet>(
-      `/api/reservations/${encodeURIComponent(reservationId)}/purchase`,
-      { method: "POST" },
+    wykonaj<StanRezerwacji>(
+      `/api/reservations/${encodeURIComponent(reservationId)}`,
+      { cache: "no-store" },
       sygnal,
       timeoutMs,
     ),
+  );
+}
+
+/** Serwer pyta Stripe'a, a ten ma własne timeouty i ponowienia, więc czekamy dłużej niż zwykle. */
+const TIMEOUT_PLATNOSCI_MS = 20_000;
+
+/** Bezpieczne do ponawiania: każda próba dla tej rezerwacji daje tę samą sesję płatności. */
+export function utworzPlatnosc(reservationId: string, opcje: OpcjeZadania = {}): Promise<SesjaPlatnosci> {
+  const { sygnal, proby = 2, timeoutMs = TIMEOUT_PLATNOSCI_MS } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<SesjaPlatnosci>(`/api/reservations/${encodeURIComponent(reservationId)}/checkout`, { method: "POST" }, sygnal, timeoutMs),
   ).then((o) => o.dane);
 }

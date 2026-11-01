@@ -11,7 +11,7 @@ const WARUNEK_ZAJETY = `status IN ('purchased', 'reserved') AND (status = 'purch
 
 // Liczba miejsc wynika z układu sali (seed zakłada wszystkie fotele), więc liczymy tylko zajęte.
 const SQL_LISTA = `
-SELECT e.id, e.movie, e.startsAt, e.hall, e.rowsCount, e.seatsPerRow,
+SELECT e.id, e.movie, e.startsAt, e.hall, e.rowsCount, e.seatsPerRow, e.price,
        e.rowsCount * e.seatsPerRow AS totalSeats,
        e.rowsCount * e.seatsPerRow
          - (SELECT COUNT(*) FROM seats WHERE eventId = e.id AND ${WARUNEK_ZAJETY}) AS freeSeats
@@ -23,7 +23,7 @@ export async function listaSeansow(db: D1Database, teraz: number): Promise<Seans
   return results;
 }
 
-const SQL_SEANS = `SELECT id, movie, startsAt, hall, rowsCount, seatsPerRow FROM events WHERE id = ?1`;
+const SQL_SEANS = `SELECT id, movie, startsAt, hall, rowsCount, seatsPerRow, price FROM events WHERE id = ?1`;
 
 // Celowo wybieramy tylko `seatId`: dane innych klientów nigdy nie opuszczają bazy w odczytach.
 // Bez ORDER BY: sortowanie w SQL skłoniłoby planer do skanu klucza głównego (cała sala) zamiast indeksu.

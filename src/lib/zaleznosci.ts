@@ -3,6 +3,7 @@
 
 import type { Zegar } from "./czas";
 import type { Konfiguracja } from "./config";
+import type { BramkaPlatnosci } from "./domain/platnosc";
 import type { SeansNaLiscie, SzczegolySeansu } from "./domain/typy";
 import type { CacheZLimitem } from "./resilience/cache";
 import type { Limitery } from "./resilience/limit-zapytan";
@@ -32,4 +33,8 @@ export interface Zaleznosci {
   wTle?: ((obietnica: Promise<unknown>) => void) | undefined;
   /** Daje znać kanałowi na żywo (Durable Object sali), że stan seansu się zmienił. */
   powiadomSale?: ((eventId: string) => void) | undefined;
+  /** Stripe. undefined = brak klucza: płatności odpowiadają 503, a reszta sklepu działa. */
+  platnosci?: BramkaPlatnosci | undefined;
+  /** Sekret do sprawdzania podpisu webhooków. */
+  sekretWebhooka?: string | undefined;
 }

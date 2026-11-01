@@ -7,7 +7,7 @@ import type { WejscieRezerwacji } from "../domain/typy";
 
 export const MAX_ROZMIAR_CIALA = 4 * 1024;
 
-async function czytajTekstZLimitem(zadanie: Request, maxBajtow: number): Promise<string> {
+export async function czytajTekstZLimitem(zadanie: Request, maxBajtow: number): Promise<string> {
   const deklarowany = Number(zadanie.headers.get("content-length") ?? "0");
   if (deklarowany > maxBajtow) throw new BladDomenowy("ZA_DUZE_ZADANIE");
   if (!zadanie.body) return "";

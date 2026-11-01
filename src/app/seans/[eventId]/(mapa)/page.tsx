@@ -11,7 +11,7 @@ import { LinkPrzycisk } from "@/components/ui/Przycisk";
 import { Kroki } from "@/components/uklad/Kroki";
 import { zegarSystemowy } from "@/lib/czas";
 import { czyPoprawneMiejsce } from "@/lib/domain/uklad-sali";
-import { formatujTermin } from "@/lib/format";
+import { formatujCene, formatujTermin } from "@/lib/format";
 import { adresKanaluNaZywo } from "@/lib/push/tryb-dev";
 import { parametr, wczytajSeans } from "@/lib/strony";
 
@@ -56,7 +56,7 @@ export default async function StronaSali({ params, searchParams }: Props) {
           <h1 className="tytul-strony">{stan.dane.event.movie}</h1>
           <p className="podtytul">
             <time dateTime={stan.dane.event.startsAt}>{formatujTermin(stan.dane.event.startsAt)}</time> ·{" "}
-            {stan.dane.event.hall}
+            {stan.dane.event.hall} · <span className="seans__cena">{formatujCene(stan.dane.event.price)}</span>
           </p>
           {stan.nieaktualne ? (
             <div className="banery">

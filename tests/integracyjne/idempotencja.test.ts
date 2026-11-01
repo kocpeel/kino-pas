@@ -1,7 +1,19 @@
 import { env } from "cloudflare:test";
 import { beforeEach, describe, expect, it } from "vitest";
 import { utworzZegarTestowy } from "../../src/lib/czas";
-import { kup, SEANS, TTL_MS, wierszMiejsca, wolneZapisy, zarezerwuj, zasiej, zaleznosci } from "./pomocnicze";
+import {
+  kup,
+  odbierzKod,
+  SEANS,
+  stanRezerwacji,
+  TTL_MS,
+  wierszMiejsca,
+  wolneZapisy,
+  zaplac,
+  zarezerwuj,
+  zasiej,
+  zaleznosci,
+} from "./pomocnicze";
 
 beforeEach(() => zasiej());
 
@@ -128,34 +140,34 @@ describe("identyczny POST rezerwacji bez Idempotency-Key", () => {
 });
 
 describe("idempotentny zakup", () => {
-  it("powtórzony zakup po sukcesie: ten sam kod; 201 za pierwszym razem, potem 200", async () => {
+  it("kolejne odczyty po płatności: ten sam kod", async () => {
     const z = zaleznosci();
     const r = await zarezerwuj(z, { seatId: "H5" });
     const pierwszy = await kup(z, r.cialo.reservationId);
-    const drugi = await kup(z, r.cialo.reservationId);
-    const trzeci = await kup(z, r.cialo.reservationId);
-    expect([pierwszy.status, drugi.status, trzeci.status]).toEqual([201, 200, 200]);
-    expect(drugi.cialo).toEqual(pierwszy.cialo);
-    expect(trzeci.cialo).toEqual(pierwszy.cialo);
     expect(pierwszy.cialo.code).toMatch(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
+    expect((await odbierzKod(z, r.cialo.reservationId)).cialo.code).toBe(pierwszy.cialo.code);
+    expect((await stanRezerwacji(z, r.cialo.reservationId)).cialo.code).toBe(pierwszy.cialo.code);
   });
 
-  it("powtórzony zakup działa także po czasie TTL (kupiony bilet nie wygasa)", async () => {
+  it("kod działa także po czasie TTL (kupiony bilet nie wygasa)", async () => {
     const zegar = utworzZegarTestowy();
     const z = zaleznosci({ zegar });
     const r = await zarezerwuj(z, { seatId: "H6" });
     const kod = (await kup(z, r.cialo.reservationId)).cialo.code;
     zegar.przewin(5 * TTL_MS);
-    expect((await kup(z, r.cialo.reservationId)).cialo.code).toBe(kod);
+    expect((await odbierzKod(z, r.cialo.reservationId)).cialo.code).toBe(kod);
   });
 
-  it("retry zakupu po timeoucie zwraca kod zapisany przez pierwszą próbę", async () => {
+  it("webhook po timeoucie: zapis się udał, odpowiedź nie dotarła, ponowienie Stripe'a niczego nie zmienia", async () => {
     const r = await zarezerwuj(zaleznosci(), { seatId: "H7" });
     const wolna = zaleznosci({ db: wolneZapisy(env.DB, 200), zmienne: { DB_TIMEOUT_MS: "50" } });
-    expect((await kup(wolna, r.cialo.reservationId)).status).toBe(503);
+    expect((await zaplac(wolna, r.cialo.reservationId, { id: "evt_timeout" })).status).toBe(503);
     await new Promise((res) => setTimeout(res, 250));
-    const ponowienie = await kup(zaleznosci(), r.cialo.reservationId);
+    const kod = (await wierszMiejsca("H7", SEANS))?.code;
+    expect(kod).toMatch(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
+
+    const ponowienie = await zaplac(zaleznosci(), r.cialo.reservationId, { id: "evt_timeout" });
     expect(ponowienie.status).toBe(200);
-    expect(ponowienie.cialo.code).toBe((await wierszMiejsca("H7", SEANS))?.code);
+    expect((await wierszMiejsca("H7", SEANS))?.code).toBe(kod);
   });
 });
