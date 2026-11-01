@@ -132,7 +132,7 @@ describe("load shedding", () => {
     expect(lista.status).toBe(503);
 
     const zakup = await kup(z, r.cialo.reservationId);
-    expect(zakup.status).toBe(201);
+    expect(zakup.status).toBe(200);
 
     zajete.forEach((zwolnij) => zwolnij());
     expect(straznik.stan()).toEqual({ odczytyWToku: 0, zapisyWToku: 0 });

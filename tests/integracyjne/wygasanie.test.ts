@@ -6,8 +6,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { utworzZegarTestowy } from "../../src/lib/czas";
 import { zwolnijWygasleRezerwacje } from "../../src/lib/db/zapytania-miejsca";
 import { obsluzSzczegolySeansu } from "../../src/lib/http/trasy";
-import cron, { sprzataj } from "../../workers/sprzatanie/src/index";
-import { kup, SEANS, TTL_MS, wierszMiejsca, zadanieGet, zarezerwuj, zasiej, zaleznosci } from "./pomocnicze";
+import cron from "../../workers/sprzatanie/src/index";
+import { sprzataj } from "../../workers/sprzatanie/src/zadania";
+import { checkout, kup, SEANS, TTL_MS, wierszMiejsca, zadanieGet, zaplac, zarezerwuj, zasiej, zaleznosci } from "./pomocnicze";
 
 beforeEach(() => zasiej());
 
@@ -32,12 +33,12 @@ describe("granica ważności", () => {
     expect(await zajete(z)).not.toContain("D4");
   });
 
-  it("zakup po wygaśnięciu → 410 z komunikatem o powrocie fotela do puli", async () => {
+  it("płatność po wygaśnięciu → 410 z komunikatem o powrocie fotela do puli", async () => {
     const zegar = utworzZegarTestowy();
     const z = zaleznosci({ zegar });
     const { cialo } = await zarezerwuj(z, { seatId: "D5" });
     zegar.przewin(TTL_MS + 1);
-    const zakup = await kup(z, cialo.reservationId);
+    const zakup = await checkout(z, cialo.reservationId);
     expect(zakup.status).toBe(410);
     expect(zakup.cialo).toEqual({ error: "reservation_expired", message: "Rezerwacja wygasła, fotel wrócił do puli." });
   });
@@ -51,8 +52,9 @@ describe("granica ważności", () => {
     expect(nowa.status).toBe(201);
     expect(nowa.cialo.reservationId).not.toBe(stara.cialo.reservationId);
 
-    expect((await kup(z, stara.cialo.reservationId)).status).toBe(410);
-    expect((await kup(z, nowa.cialo.reservationId)).status).toBe(201);
+    await zaplac(z, stara.cialo.reservationId, { paymentIntent: "pi_stara" });
+    expect(await wierszMiejsca("D6")).toMatchObject({ email: "nowy@example.com", status: "reserved" });
+    await zaplac(z, nowa.cialo.reservationId, { paymentIntent: "pi_nowa" });
     expect(await wierszMiejsca("D6")).toMatchObject({ email: "nowy@example.com", status: "purchased" });
   });
 

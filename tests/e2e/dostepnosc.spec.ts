@@ -1,6 +1,6 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
-import { fotel, seanse, wolnyFotel, wypelnijIRezerwuj } from "./pomocnicze";
+import { fotel, seanse, wolnyFotel, wypelnijIRezerwuj, zaplacNaStripe } from "./pomocnicze";
 
 async function bezNaruszen(page: Page, ekran: string) {
   const wynik = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"]).analyze();
@@ -24,7 +24,12 @@ test("6a. axe: brak naruszeń na każdym ekranie", async ({ page, request }) => 
   await wypelnijIRezerwuj(page);
   await expect(page.getByRole("timer")).toBeVisible();
   await bezNaruszen(page, "licznik");
-  await page.getByRole("button", { name: "Kupuję bilet" }).click();
+  await page.goto(`${page.url()}&platnosc=przerwana`);
+  await expect(page.getByText("Płatność przerwana")).toBeVisible();
+  await bezNaruszen(page, "powrót po przerwanej płatności");
+  await zaplacNaStripe(page, "?webhook=opozniony&ms=2500");
+  await expect(page.getByText("Płatność w toku…")).toBeVisible();
+  await bezNaruszen(page, "płatność w toku");
   await expect(page.locator(".bilet__kod")).toBeVisible();
   await bezNaruszen(page, "bilet");
   await page.goto("/seans/nie-ma-takiego");
@@ -78,7 +83,7 @@ test("6d. mapa po polsku: lang=pl i etykiety foteli", async ({ page, request }) 
   await expect(page.getByRole("grid")).toBeVisible();
 });
 
-test("wspólne: bez danych sesji licznik pozwala spróbować kupić (serwer decyduje)", async ({ page, request }) => {
+test("wspólne: bez danych sesji licznik i cena przychodzą z serwera", async ({ page, request }) => {
   const [seans] = await seanse(request);
   const seatId = await wolnyFotel(request, seans!.id);
   await page.goto(`/seans/${seans!.id}/miejsce/${seatId}`);
@@ -86,7 +91,8 @@ test("wspólne: bez danych sesji licznik pozwala spróbować kupić (serwer decy
   await expect(page.getByRole("timer")).toBeVisible();
   await page.evaluate(() => sessionStorage.clear());
   await page.reload();
-  await expect(page.getByText("Nie widzimy czasu ważności tej rezerwacji")).toBeVisible();
-  await page.getByRole("button", { name: "Kupuję bilet" }).click();
+  await expect(page.getByRole("timer")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Zapłać 32 zł" })).toBeVisible();
+  await zaplacNaStripe(page);
   await expect(page.locator(".bilet__kod")).toBeVisible();
 });

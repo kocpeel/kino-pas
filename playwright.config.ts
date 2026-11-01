@@ -1,7 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
 // E2E na `npm run dev` (Next.js + Worker sali z kanałem na żywo) ze środowiskiem `e2e`
-// (osobna baza D1, TTL rezerwacji 5 s). Obejmuje też testy pusha z tests/e2e-push.
+// (osobna baza D1, TTL rezerwacji 8 s, sztuczny Stripe). Obejmuje też testy pusha z tests/e2e-push.
 // Przeglądarka: domyślnie Chromium z Playwright (`npx playwright install chromium`),
 // albo zainstalowany Chrome/Edge: PW_CHANNEL=chrome | msedge.
 const PORT = process.env.E2E_PORT || "3100";

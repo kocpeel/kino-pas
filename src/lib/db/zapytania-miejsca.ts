@@ -1,6 +1,7 @@
 // Warunkowe zapisy na tabeli `seats`. Poprawność przy równoległych żądaniach wynika
 // z tego, że każdy zapis to JEDNO zdanie UPDATE z warunkiem na stanie: D1 (SQLite)
 // wykonuje je atomowo, a o sukcesie mówi `meta.changes`, bez osobnego „sprawdź, potem zapisz".
+// Zapis biletu po płatności jest w zapytania-platnosci.ts.
 
 import type { StatusMiejsca } from "../domain/typy";
 
@@ -37,42 +38,35 @@ UPDATE seats
    AND (?9 = 0 OR (SELECT COUNT(*) FROM seats
                     WHERE email = ?4 AND status = 'reserved' AND expiresAt > ?6) < ?9)`;
 
-export async function zarezerwujMiejsce(db: D1Database, p: ParametryRezerwacji): Promise<boolean> {
-  const wynik = await db
-    .prepare(SQL_REZERWACJA)
-    .bind(
-      p.reservationId,
-      p.expiresAt,
-      p.customerName,
-      p.email,
-      p.idempotencyKey,
-      p.teraz,
-      p.eventId,
-      p.seatId,
-      p.limitNaEmail,
-    )
-    .run();
-  return wynik.meta.changes === 1;
-}
+// Wpis do historii powstaje tylko, gdy UPDATE wyżej ustawił to reservationId. Stąd też kwota:
+// cena wydarzenia z tej chwili, zapisana raz i niezmienna.
+const SQL_WPIS_REZERWACJI = `
+INSERT INTO reservations (id, eventId, seatId, amount, expiresAt, createdAt)
+SELECT s.reservationId, s.eventId, s.seatId, e.price, s.expiresAt, ?2
+  FROM seats s JOIN events e ON e.id = s.eventId
+ WHERE s.reservationId = ?1
+RETURNING amount`;
 
-// Zakup zgodnie ze wspólnym kontraktem: wystarczy identyfikator ważnej rezerwacji (losowy UUID).
-const SQL_ZAKUP = `
-UPDATE seats
-   SET status = 'purchased',
-       code = ?1,
-       expiresAt = NULL,
-       version = version + 1,
-       updatedAt = ?2
- WHERE reservationId = ?3
-   AND status = 'reserved'
-   AND expiresAt > ?2`;
-
-export async function kupMiejsce(
-  db: D1Database,
-  p: { reservationId: string; code: string; teraz: number },
-): Promise<boolean> {
-  const wynik = await db.prepare(SQL_ZAKUP).bind(p.code, p.teraz, p.reservationId).run();
-  return wynik.meta.changes === 1;
+/** Zwraca kwotę zapisanej rezerwacji albo null, gdy fotel nie był do wzięcia. */
+export async function zarezerwujMiejsce(db: D1Database, p: ParametryRezerwacji): Promise<number | null> {
+  const [fotel, wpis] = await db.batch([
+    db
+      .prepare(SQL_REZERWACJA)
+      .bind(
+        p.reservationId,
+        p.expiresAt,
+        p.customerName,
+        p.email,
+        p.idempotencyKey,
+        p.teraz,
+        p.eventId,
+        p.seatId,
+        p.limitNaEmail,
+      ),
+    db.prepare(SQL_WPIS_REZERWACJI).bind(p.reservationId, p.teraz),
+  ]);
+  if (fotel?.meta.changes !== 1) return null;
+  return (wpis?.results[0] as { amount: number } | undefined)?.amount ?? null;
 }
 
 // Sprzątanie (Cron). Czyści też dane osobowe wygasłych rezerwacji.
@@ -126,13 +120,15 @@ export interface WierszPoKluczu {
   status: StatusMiejsca;
   reservationId: string | null;
   expiresAt: number | null;
+  amount: number | null;
 }
 
 export async function znajdzPoKluczuIdempotencji(db: D1Database, klucz: string): Promise<WierszPoKluczu | null> {
   return db
     .prepare(
-      `SELECT eventId, seatId, email, status, reservationId, expiresAt
-         FROM seats WHERE idempotencyKey = ?1`,
+      `SELECT s.eventId, s.seatId, s.email, s.status, s.reservationId, s.expiresAt, r.amount
+         FROM seats s LEFT JOIN reservations r ON r.id = s.reservationId
+        WHERE s.idempotencyKey = ?1`,
     )
     .bind(klucz)
     .first<WierszPoKluczu>();
@@ -144,12 +140,15 @@ export interface StanMiejsca {
   reservationId: string | null;
   customerName: string | null;
   email: string | null;
+  amount: number | null;
 }
 
 export async function stanMiejsca(db: D1Database, eventId: string, seatId: string): Promise<StanMiejsca | null> {
   return db
     .prepare(
-      `SELECT status, expiresAt, reservationId, customerName, email FROM seats WHERE eventId = ?1 AND seatId = ?2`,
+      `SELECT s.status, s.expiresAt, s.reservationId, s.customerName, s.email, r.amount
+         FROM seats s LEFT JOIN reservations r ON r.id = s.reservationId
+        WHERE s.eventId = ?1 AND s.seatId = ?2`,
     )
     .bind(eventId, seatId)
     .first<StanMiejsca>();
@@ -169,19 +168,6 @@ export async function aktywneRezerwacjeEmaila(db: D1Database, email: string, ter
     .bind(email, teraz)
     .first<AktywneRezerwacje>();
   return wiersz ?? { liczba: 0, najwczesniejWygasa: null };
-}
-
-export interface WierszPoRezerwacji {
-  status: StatusMiejsca;
-  code: string | null;
-  expiresAt: number | null;
-}
-
-export async function znajdzPoRezerwacji(db: D1Database, reservationId: string): Promise<WierszPoRezerwacji | null> {
-  return db
-    .prepare(`SELECT status, code, expiresAt FROM seats WHERE reservationId = ?1`)
-    .bind(reservationId)
-    .first<WierszPoRezerwacji>();
 }
 
 export type KolumnaUnikalna = "reservationId" | "code" | "idempotencyKey";

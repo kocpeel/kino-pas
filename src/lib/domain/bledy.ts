@@ -6,6 +6,10 @@ export type RodzajBledu =
   | "NIE_ZNALEZIONO"
   | "ZAJETE"
   | "WYGASLA"
+  | "JUZ_OPLACONA"
+  | "PLATNOSC_WYMAGANA"
+  | "ZLY_PODPIS"
+  | "PLATNOSCI_NIEDOSTEPNE"
   | "KLUCZ_UZYTY"
   | "LIMIT_ZAPYTAN"
   | "LIMIT_REZERWACJI"
@@ -29,6 +33,26 @@ export const OPISY_BLEDOW: Record<RodzajBledu, OpisBledu> = {
     status: 410,
     kod: "reservation_expired",
     komunikat: "Rezerwacja wygasła, fotel wrócił do puli.",
+  },
+  JUZ_OPLACONA: {
+    status: 409,
+    kod: "reservation_already_paid",
+    komunikat: "Ta rezerwacja jest już opłacona, bilet czeka.",
+  },
+  PLATNOSC_WYMAGANA: {
+    status: 402,
+    kod: "payment_required",
+    komunikat: "Bilet dostaniesz po opłaceniu rezerwacji.",
+  },
+  ZLY_PODPIS: {
+    status: 400,
+    kod: "invalid_signature",
+    komunikat: "Niepoprawny podpis zdarzenia.",
+  },
+  PLATNOSCI_NIEDOSTEPNE: {
+    status: 503,
+    kod: "payments_unavailable",
+    komunikat: "Płatności są chwilowo niedostępne. Twoja rezerwacja jest bezpieczna, spróbuj za chwilę.",
   },
   KLUCZ_UZYTY: {
     status: 422,

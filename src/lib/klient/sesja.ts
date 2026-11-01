@@ -41,6 +41,8 @@ export interface ZapisRezerwacji {
   eventId: string;
   seatId: string;
   expiresAt: number;
+  /** Kwota w groszach, zapisana przy rezerwacji. */
+  amount: number;
   /** Czas utworzenia według zegara serwera, do paska postępu. */
   utworzono: number;
   przesuniecieZegara: number;
@@ -56,6 +58,7 @@ function czyZapisRezerwacji(x: unknown): x is ZapisRezerwacji {
     typeof z.eventId === "string" &&
     typeof z.seatId === "string" &&
     typeof z.expiresAt === "number" &&
+    typeof z.amount === "number" &&
     typeof z.utworzono === "number" &&
     typeof z.przesuniecieZegara === "number" &&
     typeof z.name === "string" &&

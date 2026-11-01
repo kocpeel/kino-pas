@@ -519,6 +519,12 @@ a {
   font-size: var(--rozmiar-s);
 }
 
+.seans__cena {
+  color: var(--kolor-tekst);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
 .seans__wolne {
   display: grid;
   gap: var(--odstep-1);
@@ -897,6 +903,10 @@ a {
   color: var(--kolor-tekst-cichy);
   font-size: var(--rozmiar-xs);
   text-align: center;
+}
+
+.przycisk + .notka {
+  margin-top: var(--odstep-3);
 }
 
 .toast {

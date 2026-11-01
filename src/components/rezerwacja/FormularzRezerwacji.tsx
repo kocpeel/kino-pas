@@ -101,6 +101,7 @@ export function FormularzRezerwacji({ eventId, seatId, adresKanalu }: Props) {
         eventId,
         seatId,
         expiresAt: dane.expiresAt,
+        amount: dane.amount,
         utworzono: Math.min(Date.now() + przesuniecieZegara, dane.expiresAt),
         przesuniecieZegara,
         name,
@@ -161,7 +162,7 @@ export function FormularzRezerwacji({ eventId, seatId, adresKanalu }: Props) {
         onChange={(e) => zmien("email", e.target.value)}
         onBlur={() => opusc("email")}
         blad={bledyPol.email}
-        podpowiedz="Na ten adres w kolejnym etapie wyślemy potwierdzenie."
+        podpowiedz="Użyjemy go tylko do tej rezerwacji."
       />
 
       <p id="pomoc-formularza" className="pole__podpowiedz" style={{ marginBottom: "var(--odstep-4)" }}>

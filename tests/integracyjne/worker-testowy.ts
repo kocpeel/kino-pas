@@ -4,9 +4,12 @@
 
 import { zaleznosciZBindingow, type Bindingi } from "../../src/lib/db/polaczenie";
 import {
+  obsluzCheckout,
   obsluzListeSeansow,
+  obsluzOdczytRezerwacji,
   obsluzRezerwacje,
   obsluzSzczegolySeansu,
+  obsluzWebhookStripe,
   obsluzZakup,
   obsluzZdrowie,
 } from "../../src/lib/http/trasy";
@@ -34,6 +37,13 @@ export default {
     if (metoda === "POST" && (m = pathname.match(/^\/api\/reservations\/([^/]+)\/purchase$/))) {
       return obsluzZakup(zadanie, dostawca, decodeURIComponent(m[1] as string));
     }
+    if (metoda === "POST" && (m = pathname.match(/^\/api\/reservations\/([^/]+)\/checkout$/))) {
+      return obsluzCheckout(zadanie, dostawca, decodeURIComponent(m[1] as string));
+    }
+    if (metoda === "GET" && (m = pathname.match(/^\/api\/reservations\/([^/]+)$/))) {
+      return obsluzOdczytRezerwacji(zadanie, dostawca, decodeURIComponent(m[1] as string));
+    }
+    if (metoda === "POST" && pathname === "/api/webhooks/stripe") return obsluzWebhookStripe(zadanie, dostawca);
     return new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Cloudflare.Env>;

@@ -10,7 +10,7 @@ import { Karta } from "@/components/ui/Karta";
 import { LinkPrzycisk } from "@/components/ui/Przycisk";
 import { Kroki } from "@/components/uklad/Kroki";
 import { opisMiejsca, parsujMiejsce } from "@/lib/domain/uklad-sali";
-import { formatujDatePelna, formatujGodzine } from "@/lib/format";
+import { formatujCene, formatujDatePelna, formatujGodzine } from "@/lib/format";
 import { adresKanaluNaZywo } from "@/lib/push/tryb-dev";
 import { wczytajSeans } from "@/lib/strony";
 
@@ -66,6 +66,9 @@ export default async function StronaFormularza({ params }: Props) {
           <time dateTime={event.startsAt}>
             {formatujDatePelna(event.startsAt)}, {formatujGodzine(event.startsAt)}
           </time>
+        </p>
+        <p className="karta__opis">
+          Cena biletu: <span className="seans__cena">{formatujCene(event.price)}</span>
         </p>
         <div style={{ height: "var(--odstep-5)" }} />
         <FormularzRezerwacji eventId={event.id} seatId={seatId} adresKanalu={adresKanaluNaZywo(event.id)} />

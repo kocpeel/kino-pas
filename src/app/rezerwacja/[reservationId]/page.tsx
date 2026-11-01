@@ -1,5 +1,5 @@
-// Licznik + „Kupuję bilet". Kontrakt nie ma GET rezerwacji, więc seans i fotel przychodzą
-// w adresie, a czas ważności z sessionStorage. Ostatnie słowo i tak ma serwer przy zakupie.
+// Licznik + „Zapłać”. Tu wraca też klient, który przerwał płatność (?platnosc=przerwana).
+// Seans i fotel przychodzą w adresie, a stan rezerwacji z GET /api/reservations/:id.
 
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
@@ -42,7 +42,13 @@ export default async function StronaRezerwacji({ params, searchParams }: Props) 
     <>
       <Kroki aktywny={3} />
       <Karta waska>
-        <Licznik reservationId={reservationId} eventId={eventId} seatId={seatId} seans={seans} />
+        <Licznik
+          reservationId={reservationId}
+          eventId={eventId}
+          seatId={seatId}
+          seans={seans}
+          przerwano={parametr(zapytanie.platnosc) === "przerwana"}
+        />
       </Karta>
     </>
   );

@@ -29,10 +29,14 @@ export function opiszBlad(blad: unknown): OpisBleduUi {
       };
     case 400:
       return { tytul: "Sprawdź dane", tresc: blad.message, akcja: null };
+    case 402:
+      return { tytul: "Najpierw płatność", tresc: blad.message, akcja: null };
     case 404:
       return { tytul: "Nie znaleziono", tresc: blad.message, akcja: "mapa" };
     case 409:
-      return { tytul: "Ten fotel został właśnie zajęty", tresc: "Wróć do mapy i wybierz inne miejsce.", akcja: "mapa" };
+      return blad.kod === "reservation_already_paid"
+        ? { tytul: "Ta rezerwacja jest już opłacona", tresc: blad.message, akcja: null }
+        : { tytul: "Ten fotel został właśnie zajęty", tresc: "Wróć do mapy i wybierz inne miejsce.", akcja: "mapa" };
     case 410:
       return { tytul: "Rezerwacja wygasła, fotel wrócił do puli", tresc: blad.message, akcja: "mapa" };
     case 422:
@@ -50,7 +54,9 @@ export function opiszBlad(blad: unknown): OpisBleduUi {
             akcja: "ponow",
           };
     case 503:
-      return { tytul: "System jest przeciążony, spróbuj za chwilę", tresc: blad.message, akcja: "ponow" };
+      return blad.kod === "payments_unavailable"
+        ? { tytul: "Płatności są chwilowo niedostępne", tresc: "Twoja rezerwacja jest bezpieczna, spróbuj za chwilę.", akcja: "ponow" }
+        : { tytul: "System jest przeciążony, spróbuj za chwilę", tresc: blad.message, akcja: "ponow" };
     default:
       return { tytul: "Coś poszło nie tak", tresc: blad.message, akcja: "ponow" };
   }

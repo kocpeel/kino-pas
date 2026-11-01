@@ -67,7 +67,7 @@
   },
 
   "env": {
-    // Środowisko do testów e2e (Playwright): osobna lokalna baza i TTL 5 s.
+    // Środowisko do testów e2e (Playwright): osobna lokalna baza i TTL 8 s.
     // Bindingi i vars nie są dziedziczone przez nazwane środowiska, więc są powtórzone.
     "e2e": {
       "name": "kasa-kino-e2e",
@@ -86,7 +86,7 @@
         { "name": "RL_KANAL_IP", "namespace_id": "4203", "simple": { "limit": 1000, "period": 60 } }
       ],
       "vars": {
-        "RESERVATION_TTL_SECONDS": "5",
+        "RESERVATION_TTL_SECONDS": "8",
         "MAX_ACTIVE_RESERVATIONS_PER_EMAIL": "4",
         "RATE_LIMIT_PERIOD_SECONDS": "60",
         "RESERVATION_ATTEMPTS_PER_IP": "1000",

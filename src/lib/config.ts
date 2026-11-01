@@ -46,7 +46,8 @@ export const DOMYSLNY_TTL_S = 15 * 60;
 
 export function wczytajKonfiguracje(env: Zmienne): Konfiguracja {
   return {
-    ttlMs: liczbaCalkowita(env, "RESERVATION_TTL_SECONDS", DOMYSLNY_TTL_S, 1, 24 * 60 * 60) * 1000,
+    // Górna granica: sesja Stripe'a żyje najwyżej 24 h, a liczymy ją od expiresAt + 31 min.
+    ttlMs: liczbaCalkowita(env, "RESERVATION_TTL_SECONDS", DOMYSLNY_TTL_S, 1, 23 * 60 * 60) * 1000,
     limitAktywnychNaEmail: liczbaCalkowita(env, "MAX_ACTIVE_RESERVATIONS_PER_EMAIL", 4, 0, 80),
     okresLimituS: liczbaCalkowita(env, "RATE_LIMIT_PERIOD_SECONDS", 60, 1, 3600),
     limitProbNaIp: liczbaCalkowita(env, "RESERVATION_ATTEMPTS_PER_IP", 10, 0, 10_000),

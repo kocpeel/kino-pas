@@ -11,6 +11,9 @@ export interface SeansSeedu {
   hall: string;
 }
 
+/** Cena fotela na seans w groszach (3200 = 32 zł). */
+export const CENA_FOTELA = 3200;
+
 export const SEANSE: readonly SeansSeedu[] = [
   { id: "metropolis-2026-11-06", movie: "Metropolis", startsAt: "2026-11-06T18:30:00.000Z", hall: "Sala 1" },
   { id: "nosferatu-2026-11-07", movie: "Nosferatu", startsAt: "2026-11-07T19:00:00.000Z", hall: "Sala 2" },
@@ -32,9 +35,9 @@ export function zbudujSeed(): string[] {
   const { rzedy, miejscaWRzedzie } = DOMYSLNY_UKLAD;
   for (const seans of SEANSE) {
     instrukcje.push(
-      `INSERT INTO events (id, movie, startsAt, hall, rowsCount, seatsPerRow) VALUES (` +
+      `INSERT INTO events (id, movie, startsAt, hall, rowsCount, seatsPerRow, price) VALUES (` +
         `${tekstSql(seans.id)}, ${tekstSql(seans.movie)}, ${tekstSql(seans.startsAt)}, ${tekstSql(seans.hall)}, ` +
-        `${rzedy}, ${miejscaWRzedzie})`,
+        `${rzedy}, ${miejscaWRzedzie}, ${CENA_FOTELA})`,
     );
     const wiersze = wszystkieMiejsca(DOMYSLNY_UKLAD).map((seatId) => `(${tekstSql(seans.id)}, ${tekstSql(seatId)})`);
     instrukcje.push(`INSERT INTO seats (eventId, seatId) VALUES ${wiersze.join(", ")}`);

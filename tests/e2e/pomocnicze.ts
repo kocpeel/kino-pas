@@ -31,3 +31,23 @@ export async function wypelnijIRezerwuj(page: Page, imie = "Tester E2E", email =
 }
 
 export const fotel = (page: Page, seatId: string) => page.locator(`[data-seat="${seatId}"]`);
+
+const PORT_STRIPE = process.env.SZTUCZNY_STRIPE_PORT || "8792";
+
+/** Klik „Zapłać” u nas i przejście na stronę sztucznego Stripe'a. */
+export async function przejdzDoStripe(page: Page): Promise<void> {
+  await page.getByRole("button", { name: /^Zapłać/ }).click();
+  await page.waitForURL(/\/pay\//);
+}
+
+/** Cała płatność: strona Stripe'a, „Zapłać kartą” i powrót do sklepu. `tryb` steruje webhookiem. */
+export async function zaplacNaStripe(page: Page, tryb = ""): Promise<void> {
+  await przejdzDoStripe(page);
+  await page.goto(`${page.url()}/oplac${tryb}`);
+}
+
+export async function stanStripe(
+  request: APIRequestContext,
+): Promise<{ webhooki: { id: string; status: number }[]; zwroty: unknown[] }> {
+  return (await request.get(`http://localhost:${PORT_STRIPE}/__stan`)).json();
+}

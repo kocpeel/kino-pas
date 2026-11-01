@@ -3,7 +3,7 @@
 
 import Link from "next/link";
 import type { SeansNaLiscie } from "@/lib/domain/typy";
-import { formatujDzien, formatujGodzine } from "@/lib/format";
+import { formatujCene, formatujDzien, formatujGodzine } from "@/lib/format";
 
 function odcienZId(id: string): number {
   let h = 0;
@@ -51,6 +51,7 @@ export function KartaSeansu({ seans, rezerwacjeWylaczone }: Props) {
             {formatujDzien(seans.startsAt)} · {formatujGodzine(seans.startsAt)}
           </time>
           <span>{seans.hall}</span>
+          <span className="seans__cena">{formatujCene(seans.price)}</span>
         </p>
         <div className="seans__wolne">
           <span className="cyfry">

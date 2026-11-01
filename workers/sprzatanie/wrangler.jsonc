@@ -1,8 +1,10 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   // Mały Worker z Cronem: co minutę zwalnia wygasłe rezerwacje i czyści ich dane osobowe
-  // (optymalizacja: poprawność zapewnia leniwe wygasanie w zapytaniach aplikacji),
-  // a raz na dobę anonimizuje kupione bilety DATA_RETENTION_DAYS dni po seansie (retencja RODO).
+  // (optymalizacja: poprawność zapewnia leniwe wygasanie w zapytaniach aplikacji) oraz wysyła outbox
+  // do Stripe'a (zwroty, strażnik sesji), a raz na dobę anonimizuje kupione bilety
+  // DATA_RETENTION_DAYS dni po seansie (retencja RODO) i sprząta inbox, outbox i historię rezerwacji.
+  // Sekret STRIPE_SECRET_KEY: `node scripts/cloudflare.mjs wrangler secret put STRIPE_SECRET_KEY --config workers/sprzatanie/wrangler.jsonc`.
   "name": "kasa-kino-sprzatanie",
   "main": "src/index.ts",
   "compatibility_date": "2026-10-01",
@@ -10,7 +12,7 @@
   // Tylko Cron, bez handlera fetch: nie wystawiamy adresu *.workers.dev.
   "workers_dev": false,
   "triggers": {
-    // Drugi wpis musi być równy CRON_RETENCJI w src/index.ts.
+    // Drugi wpis musi być równy CRON_RETENCJI w src/zadania.ts.
     "crons": ["* * * * *", "17 3 * * *"]
   },
   "vars": { "DATA_RETENTION_DAYS": "30" },
