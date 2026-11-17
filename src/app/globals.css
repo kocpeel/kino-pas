@@ -1020,3 +1020,35 @@ a {
     background: #fff;
   }
 }
+
+/* ——— Etap III: punkty ——— */
+
+.punkty-saldo {
+  margin: calc(-1 * var(--odstep-2)) 0 var(--odstep-4);
+  font-size: var(--rozmiar-xs);
+  color: var(--kolor-tekst-cichy);
+}
+
+.punkty {
+  margin: var(--odstep-4) 0;
+}
+
+.punkty__wiersz {
+  display: flex;
+  gap: var(--odstep-2);
+  align-items: stretch;
+}
+
+.punkty__wejscie {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.podsumowanie-zakupu {
+  margin-top: var(--odstep-4);
+}
+
+.podsumowanie-zakupu__stan {
+  font-weight: normal;
+}

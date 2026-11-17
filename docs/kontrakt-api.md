@@ -1,4 +1,4 @@
-# Kontrakt API (etapy I i II)
+# Kontrakt API (etapy I–III)
 
 Wszystkie odpowiedzi to JSON (`application/json; charset=utf-8`). Czasy w `expiresAt` to epoch ms (UTC) z zegara serwera.
 Kwoty (`price`, `amount`) to grosze, waluta PLN: 3200 to 32 zł. Konwencja: 2xx sukces, 4xx odmowa z komunikatem, 5xx błąd serwera.
@@ -20,9 +20,11 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
 | GET | `/api/events` | 200 `SeansNaLiscie[]`, 304 | 503 |
 | GET | `/api/events/:id` | 200 `{ event, takenSeats }`, 304 | 404, 503 |
 | POST | `/api/reservations` | 201 `{ reservationId, expiresAt, amount }` | 400, 404, 409, 413, 422, 429, 503 |
-| GET | `/api/reservations/:id` | 200 `{ status, amount, expiresAt, code? }` | 400, 404, 503 |
-| POST | `/api/reservations/:id/checkout` | 200 `{ url }` | 400, 404, 409, 410, 503 |
+| GET | `/api/reservations/:id` | 200 `{ status, amount, expiresAt, pointsUsed, code?, pointsEarned? }` | 400, 404, 503 |
+| POST | `/api/reservations/:id/checkout` | 200 `{ url }`; ciało opcjonalne `{ points }` | 400, 404, 409, 410, 422, 503 |
 | POST | `/api/webhooks/stripe` | 200 `{ received: true }` | 400, 413, 503 |
+| GET | `/api/loyalty?email=…` (etap III) | 200 `{ email, points }` | 400, 503 |
+| POST | `/api/webhooks/resend` (etap III) | 200 `{ received: true }` | 400, 413, 503 |
 | POST | `/api/reservations/:id/purchase` | 200 `{ code }` opłaconej rezerwacji | 400, 402, 410, 503 |
 | GET | `/api/zdrowie` (poza kontraktem, do monitoringu) | 200 `{ status: "ok" \| "degraded", db: { latencyMs, avgLatencyMs }, loadShedding: { capacity }, payments: { configured } }` | 503 |
 
@@ -103,7 +105,10 @@ kontrakcie. Identyfikator to losowy UUID v4 (122 bity), więc nie da się go zga
 Stan rezerwacji, bez pytania Stripe'a. Przez to strona powrotu nie czeka ani na kartę A, ani na B.
 
 ```json
-{ "status": "paid", "amount": 3200, "expiresAt": 1793563812419, "code": "WGHZ-VJ4X" }
+{
+  "status": "paid", "amount": 3200, "expiresAt": 1793563812419, "code": "WGHZ-VJ4X",
+  "pointsUsed": 1000, "pointsEarned": 220, "pointsStatus": "done", "emailStatus": "sent"
+}
 ```
 
 | `status` | Kiedy |
@@ -115,19 +120,34 @@ Stan rezerwacji, bez pytania Stripe'a. Przez to strona powrotu nie czeka ani na 
 Pole `refund` pojawia się tylko, gdy płatność nie dała biletu (np. przyszła po `expiresAt`): `pending` albo `done`,
 a `failed`, gdy automatyczny zwrot się nie udał. Nieznana rezerwacja: 404 `not_found`. Zły identyfikator: 400 `invalid_input`.
 
+Punkty (etap III):
+
+| Pole | Kiedy | Znaczenie |
+|---|---|---|
+| `pointsUsed` | zawsze | Ile punktów zeszło z konta na tę rezerwację (0 = bez punktów). Kartą płaci się `amount − pointsUsed`. |
+| `pointsEarned` | tylko `paid` | Punkty za zakup: 10 za każdy pełny złoty zapłacony kartą. |
+| `pointsStatus` | po bilecie albo po zwrocie | `pending` → `done`: naliczenie punktów za zakup (bilet) albo oddanie wydanych punktów (brak biletu). `failed`: nie udało się automatycznie. |
+| `emailStatus` | po bilecie | Mail z biletem: `pending`, `sent`, potem `delivered` albo `bounced` (z webhooka Resend); `failed`, gdy Resend odmówił. |
+
 ### POST /api/reservations/:id/checkout
 
-Bez ciała. Tworzy sesję Stripe Checkout z kwotą z rezerwacji i zwraca `{ url }` strony płatności. Ponowienie, podwójne
-kliknięcie i powrót po przerwanej płatności dają **tę samą** sesję.
+Ciało opcjonalne: `{ "points": 1000 }` (etap III). Bez `points` działa jak w etapie II. Tworzy sesję Stripe Checkout
+i zwraca `{ url }` strony płatności. Kwota sesji to zawsze `amount` z rezerwacji pomniejszone o punkty: inne pola
+ciała, np. `amount`, nic nie zmieniają. Punkty schodzą z konta klienta w Voucherify, zanim powstanie sesja.
+Ponowienie, podwójne kliknięcie i powrót po przerwanej płatności dają **tę samą** sesję, a punkty schodzą raz.
+Liczbę punktów ustala pierwszy udany checkout.
 
 | Kod | `error` | Kiedy |
 |---|---|---|
 | 200 | – | `{ url }`. |
-| 400 | `invalid_input` | `:id` nie jest UUID. |
+| 400 | `invalid_input` | `:id` nie jest UUID albo `points` nie jest liczbą całkowitą ≥ 0 albo przekracza połowę `amount` (`details.points`). |
 | 404 | `not_found` | Nie ma takiej rezerwacji. |
 | 409 | `reservation_already_paid` | Rezerwacja jest już opłacona. |
+| 409 | `points_locked` | Płatność jest już przygotowana z inną liczbą punktów. Bez `points` albo z tą samą liczbą: ta sama sesja. |
 | 410 | `reservation_expired` | Rezerwacja wygasła. |
+| 422 | `not_enough_points` | Klient ma za mało punktów (`details.points` mówi, ile ma). Nic nie zeszło. |
 | 503 | `payments_unavailable` | Stripe nie odpowiada albo płatności nie są skonfigurowane. Rezerwacja dalej trzyma fotel, a ponowienie jest bezpieczne. Ma `Retry-After`. |
+| 503 | `points_unavailable` | Voucherify nie odpowiada, budżet wywołań wyczerpany albo trwa inna operacja na punktach klienta. Ponowienie jest bezpieczne, a płatność bez punktów działa. Ma `Retry-After`. |
 
 Sesja żyje co najmniej 30 minut, czyli dłużej niż rezerwacja. Po wygaśnięciu rezerwacji sesję wygasza strażnik
 (najpóźniej około minuty), a płatność, która mimo to zdąży, wraca do klienta i nie daje biletu.
@@ -143,6 +163,29 @@ Obsługiwane: `checkout.session.completed` i `checkout.session.async_payment_suc
 | 400 `invalid_signature` | Brak albo zły podpis, za stary znacznik czasu. Nic się nie zmienia. |
 | 413 `payload_too_large` | Ciało > 1 MiB. |
 | 503 | Baza niedostępna albo brak sekretu webhooka. Stripe ponowi. |
+
+### GET /api/loyalty?email=… (etap III)
+
+Saldo punktów klienta. Identyfikatorem konta jest e-mail (normalizowany do małych liter).
+
+```json
+{ "email": "jan@example.com", "points": 1000 }
+```
+
+- E-mail, który jeszcze nic nie kupił (nie ma karty w Voucherify), ma 1000 punktów (punkty powitalne). Kartę
+  zakładamy przy pierwszym użyciu punktów albo przy pierwszym naliczeniu, nie przy odczycie salda.
+- Źródłem prawdy jest Voucherify, także dla e-maila, którego jeszcze nie znamy: kartę mogła mu założyć aplikacja albo
+  kasa, i wtedy podajemy jej saldo. Saldo z ostatnich 30 s podajemy z pamięci podręcznej (sandbox Voucherify przyjmuje
+  100 wywołań na godzinę). Gdy Voucherify albo budżet wywołań odmówi: ostatnie znane saldo z nagłówkami
+  `X-Data-Stale: true` i `X-Data-Age: <s>`; dla nieznanego e-maila 1000 z `X-Data-Stale: true`; znany klient bez
+  zapamiętanego salda dostaje 503 `points_unavailable` z `Retry-After`.
+- Zły e-mail: 400 `invalid_input`.
+
+### POST /api/webhooks/resend (etap III)
+
+Los wysłanego maila od Resend. Wymaga podpisu Svix (`svix-id`, `svix-timestamp`, `svix-signature`, tolerancja 5 min).
+Obsługiwane: `email.delivered`, `email.bounced`, `email.failed` (zmieniają `emailStatus` rezerwacji). 200 także dla
+duplikatu i innych typów, 400 `invalid_signature` przy złym podpisie, 503 bez sekretu webhooka.
 
 ### POST /api/reservations/:id/purchase
 

@@ -253,3 +253,64 @@ prawdziwe SDK (`tests/e2e/sztuczny-stripe.mjs`). Podpis webhooka zawsze jest pra
 bez endpointu w panelu. Na produkcji (1.11.2026) Stripe dostarczył dwa zdarzenia `checkout.session.expired`: obie
 odpowiedzi 200, `pending_webhooks` 0. Ścieżkę biletu sprawdziło tam zdarzenie podpisane sekretem produkcji, a płatność
 kartą robi człowiek.
+
+## 14. Etap III: punkty (Voucherify) i mail (Resend) jako saga
+
+Droga i miejsca zapisu są w [kontrakt-wewnetrzny.md](kontrakt-wewnetrzny.md#etap-iii-saga-zakupu-z-punktami-e08),
+zagrożenia D17–D31 w [zagrozenia.md](zagrozenia.md). Tu są decyzje, które nie wynikają wprost z treści zadania.
+
+**Orkiestracja, nie choreografia.** Zakup ma jednego właściciela (nas), a kroki to cudze API, więc według E08 wybieramy
+orkiestrację: kolejność kroków jest w jednym miejscu, a stan zakupu w jednym wierszu `sagas`. Koordynatorem jest
+checkout (kroki 1 i 2, klient czeka na adres płatności) i outbox z Cronem (kroki po bilecie i kompensacje).
+
+**Punkty schodzą przed sesją płatności.** Treść zadania mówi, że punkty schodzą z karty w Voucherify, a sesja jest na
+kwotę po odjęciu punktów. Odwrotna kolejność (najpierw płatność) pozwoliłaby zapłacić kartą mniej za punkty, których
+klient już nie ma. Ceną jest kompensacja, gdy płatności nie będzie: strażnik sesji oddaje punkty po końcu rezerwacji.
+
+**Bilet to punkt bez odwrotu.** Po nim są tylko kroki do przodu (naliczenie, mail): ich porażka nie cofa zakupu, tylko
+czeka w outboksie, a po limicie prób ląduje w DLQ ze stanem `failed` widocznym na stronie. Mail jest ostatni,
+bo wysłanego nie da się odwołać.
+
+**Dwie kompensacje idą niezależnie, a nie „od końca”.** E08 każe cofać od ostatniego udanego kroku, bo późniejszy
+krok zwykle zależy od wcześniejszego. Tu zwrot na kartę (kompensacja kroku 2) i oddanie punktów (kroku 1) nie zależą
+od siebie, więc powstają w jednej transakcji jako dwa joby i każdy ponawia się sam. Gdyby zwrot na kartę utknął
+w DLQ, klient i tak odzyska punkty, a saga zostanie w `compensating`, aż zwrotem zajmie się człowiek.
+
+**Liczbę punktów ustala pierwszy checkout.** Zmiana po utworzeniu sesji wymagałaby wygaszenia sesji i drugiej
+operacji na punktach (więcej wywołań z budżetu 100/h i więcej miejsc na wyścig). Klient, który przerwał płatność,
+wraca do tej samej sesji z tymi samymi punktami; inna liczba to 409 `points_locked` z wyjaśnieniem.
+
+**Nieznany e-mail też sprawdzamy w Voucherify.** Z programu korzystają też aplikacja i kasy, więc e-mail, którego
+nie znamy, mógł już dostać tam kartę. `GET /api/loyalty` szuka jej jednym odczytem z budżetu. Jeśli karta jest,
+pokazujemy jej saldo i ją zapamiętujemy; jeśli jej nie ma, klient nic jeszcze nie kupił i ma 1000. Karty przy samym odczycie nie
+zakładamy (GET bez skutków ubocznych, a każdy mógłby nim zużyć budżet), więc kartę i punkty powitalne zakłada
+pierwszy zakup. Gdy Voucherify albo budżet odmówi, odpowiadamy 1000 z `X-Data-Stale`.
+
+**Pochodzenie karty pamiętamy u siebie.** Punkty powitalne należą się nowemu klientowi, a nie klientowi z kas.
+Voucherify tego nie rozróżni: metadane z zapisu do programu trafiają do publikacji, a nie na kartę. Dlatego przed
+założeniem karty zapisujemy notatkę `cardRequestedAt` (jak notatki „niepewne”): karta znaleziona przy notatce jest
+nasza z przerwanej próby (powitalne po sprawdzeniu historii), a bez notatki przyszła z innego kanału.
+
+**E-mail w adresie `GET /api/loyalty?email=`.** Tak mówi kontrakt. Strona woła go przez `fetch`, więc adres nie trafia
+do historii przeglądarki, ale trafia do logów żądań Cloudflare; nasze logi e-maila nie wypisują. Saldo dowolnego
+e-maila widzi każdy, kto ten e-mail zna: to ten sam kompromis co kod biletu po samym identyfikatorze (sekcja 12).
+
+**Obcięte odjęcie: korekta i 422.** Sandbox pokazał, że Voucherify nie odmawia odjęcia większego niż saldo, tylko
+zdejmuje tyle, ile jest (odpowiedź mówi to w `points`: −300 przy prośbie o −500, a przy saldzie 0 zwraca `points: 0`
+i nie zapisuje operacji). Saldo sprawdzamy przed wydaniem, ale z pamięci (do 30 s), a kasa mogła w tym czasie wydać
+punkty. Bez tej obsługi zapisalibyśmy `pointsUsed` większe niż to, co zeszło, i sesja dałaby rabat bez pokrycia.
+Dlatego bramka zwraca faktyczną zmianę, a gdy zeszło mniej, niż klient chciał wydać, od razu oddajemy to, co zeszło
+(`korekta:<source_id próby>`), i odpowiadamy 422 z aktualnym saldem. Następna próba tej rezerwacji ma własny
+`source_id` (`wydanie:<id>:2`), więc historia karty zostaje jednoznaczna. Gdy korekta się nie uda, zostaje notatka
+„niepewne”: ponowiony checkout albo strażnik po końcu rezerwacji policzy z historii karty, ile naprawdę zeszło
+(wydanie minus korekta), i odda tylko to.
+
+**Sprawdzone na prawdziwych usługach (17.11.2026).** Voucherify, nasza bramka na sandboksie: szukanie karty po
+e-mailu (`customer` = nasz `source_id`), założenie karty, saldo z `loyalty_card.balance`, dodanie i odjęcie z naszym
+`source_id`, historia karty od najnowszej (`order=-id`) z `source_id` i liczbą punktów w `details.balance.points`,
+operacja widoczna w historii od razu; drugi zapis tego samego klienta zwraca jego kartę (bez błędu); odjęcie ponad
+saldo jest obcinane (wyżej). Resend, nasza bramka i szablon: mail na `delivered+…@resend.dev` i `bounced+…@resend.dev`,
+powtórka z tym samym `Idempotency-Key` zwraca ten sam mail. Klucz Resend ma tylko prawo wysyłki, więc webhook Resend
+zakłada się w panelu, a jego sekret trafia do `RESEND_WEBHOOK_SECRET`. Lokalnie przeszła też cała saga na prawdziwym
+Voucherify i Resend: saldo w formularzu, wydanie 1000 pkt, sesja Stripe na 22 zł oraz kompensacja po wygaśnięciu
+rezerwacji (strażnik wygasza sesję i oddaje punkty).

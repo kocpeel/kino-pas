@@ -3,15 +3,19 @@
 // a testy integracyjne wołają je bezpośrednio z prawdziwym D1.
 
 import { BladDomenowy, czyBladDomenowy } from "../domain/bledy";
+import { KOMUNIKATY_POL, normalizujEmail } from "../domain/dane-klienta";
+import { saldoDlaKlienta } from "../domain/konto-punktowe";
 import { obsluzZdarzeniePlatnosci, stanDlaKlienta, statusRezerwacji, utworzPlatnosc } from "../domain/platnosc";
 import { czyPoprawneIdRezerwacji, zarezerwuj } from "../domain/rezerwacja";
-import { znajdzRezerwacje } from "../db/zapytania-platnosci";
+import type { SaldoPunktow } from "../domain/typy";
+import { zapiszLosMaila, znajdzRezerwacje } from "../db/zapytania-platnosci";
+import { czyPodpisResendPoprawny, type ZdarzenieMaila } from "../maile/resend";
 import { zweryfikujZdarzenie } from "../platnosci/stripe";
 import { adresKlienta, sprawdzLimityRezerwacji } from "../resilience/limit-zapytan";
-import { obsluzTrase, wPuli, type DostawcaZaleznosci } from "./obsluga-trasy";
+import { obsluzTrase, wPuli, wymagajBazy, type DostawcaZaleznosci } from "./obsluga-trasy";
 import { pobierzRepertuar, pobierzSzczegoly, uniewaznijPoZapisie } from "./odczyty";
 import { json, jsonZEtagiem } from "./odpowiedzi";
-import { czytajTekstZLimitem, wejscieRezerwacji } from "./walidacja";
+import { czytajOpcjonalnyObiektJson, czytajTekstZLimitem, wejscieRezerwacji } from "./walidacja";
 
 /** GET /api/events (ETag: 304, gdy liczby wolnych miejsc się nie zmieniły) */
 export function obsluzListeSeansow(zadanie: Request, dostawca: DostawcaZaleznosci): Promise<Response> {
@@ -85,20 +89,55 @@ export function obsluzOdczytRezerwacji(zadanie: Request, dostawca: DostawcaZalez
   });
 }
 
-/** POST /api/reservations/:id/checkout: sesja płatności (ta sama przy każdym ponowieniu). */
+/**
+ * POST /api/reservations/:id/checkout: sesja płatności (ta sama przy każdym ponowieniu). Opcjonalne
+ * `{ points }`: tyle punktów schodzi z karty klienta, a sesja jest na cenę pomniejszoną o nie.
+ * Kwota zawsze z rezerwacji: `amount` w ciele nic nie zmienia.
+ */
 export function obsluzCheckout(zadanie: Request, dostawca: DostawcaZaleznosci, reservationId: string): Promise<Response> {
   return obsluzTrase(dostawca, async (z) => {
     wymagajIdRezerwacji(reservationId);
+    const cialo = await czytajOpcjonalnyObiektJson(zadanie);
     const sesja = await utworzPlatnosc(
       {
         wBazie: (praca) => wPuli(z, "zakup", praca),
         bramka: z.platnosci,
+        punkty: z.punkty,
+        db: z.db,
+        zegar: z.zegar,
         teraz: z.zegar.teraz(),
       },
       reservationId,
       new URL(zadanie.url).origin,
+      cialo.points,
     );
     return json(sesja);
+  });
+}
+
+/**
+ * GET /api/loyalty?email=…: saldo punktów klienta. Źródłem prawdy jest Voucherify; e-mail, który nic
+ * jeszcze nie kupił (nie ma karty), ma punkty powitalne. Gdy Voucherify albo budżet wywołań odmówi, ostatnie
+ * znane saldo (a dla nieznanego e-maila powitalne) z nagłówkiem X-Data-Stale, jak lista seansów w trybie awaryjnym.
+ */
+export function obsluzSaldo(zadanie: Request, dostawca: DostawcaZaleznosci): Promise<Response> {
+  return obsluzTrase(dostawca, async (z) => {
+    const email = normalizujEmail(new URL(zadanie.url).searchParams.get("email"));
+    if (!email) {
+      throw new BladDomenowy("NIEPOPRAWNE_DANE", { komunikat: "Podaj poprawny adres e-mail.", szczegoly: { email: KOMUNIKATY_POL.email } });
+    }
+    // Pula jak dla szczegółów (load shedding), ale bez limitu czasu bazy: w środku może być wywołanie Voucherify.
+    const zwolnij = z.straznik.wejdz("szczegoly");
+    try {
+      const saldo = await saldoDlaKlienta(wymagajBazy(z), z.punkty, email, z.zegar.teraz());
+      const cialo: SaldoPunktow = { email, points: saldo.points };
+      const naglowki: Record<string, string> = saldo.nieaktualne
+        ? { "X-Data-Stale": "true", ...(saldo.wiekMs !== null ? { "X-Data-Age": String(Math.round(saldo.wiekMs / 1000)) } : {}) }
+        : {};
+      return json(cialo, 200, naglowki);
+    } finally {
+      zwolnij();
+    }
   });
 }
 
@@ -125,6 +164,46 @@ export function obsluzWebhookStripe(zadanie: Request, dostawca: DostawcaZaleznos
       // Fotel mógł wrócić do zajętych (płatność na czas, webhook po sprzątaniu Crona).
       uniewaznijPoZapisie(z, wynik.eventId);
       z.powiadomSale?.(wynik.eventId);
+    }
+    return json({ received: true });
+  });
+}
+
+const LOS_MAILA: Record<string, "delivered" | "bounced" | "failed"> = {
+  "email.delivered": "delivered",
+  "email.bounced": "bounced",
+  "email.failed": "failed",
+};
+
+/**
+ * POST /api/webhooks/resend: los wysłanego maila (Resend, podpis Svix na surowym ciele). Doręczony albo
+ * odrzucony (np. bounced@resend.dev) trafia do rezerwacji, więc strona biletu mówi uczciwie, czy mail doszedł.
+ * Duplikat (ten sam svix-id) zapisuje inbox, więc kończy się 200 bez zmian.
+ */
+export function obsluzWebhookResend(zadanie: Request, dostawca: DostawcaZaleznosci): Promise<Response> {
+  return obsluzTrase(dostawca, async (z) => {
+    if (!z.sekretWebhookaResend) {
+      console.error("Brak RESEND_WEBHOOK_SECRET: webhook Resend nie może sprawdzić podpisu.");
+      throw new BladDomenowy("NIEDOSTEPNE", { ponowZaS: 60 });
+    }
+    const cialo = await czytajTekstZLimitem(zadanie, MAX_ROZMIAR_ZDARZENIA);
+    const naglowki = {
+      id: zadanie.headers.get("svix-id"),
+      timestamp: zadanie.headers.get("svix-timestamp"),
+      podpis: zadanie.headers.get("svix-signature"),
+    };
+    const teraz = z.zegar.teraz();
+    if (!(await czyPodpisResendPoprawny(cialo, naglowki, z.sekretWebhookaResend, teraz))) throw new BladDomenowy("ZLY_PODPIS");
+    let zdarzenie: ZdarzenieMaila;
+    try {
+      zdarzenie = JSON.parse(cialo) as ZdarzenieMaila;
+    } catch {
+      throw new BladDomenowy("NIEPOPRAWNE_DANE", { komunikat: "Niepoprawny JSON." });
+    }
+    const los = LOS_MAILA[zdarzenie.type];
+    const emailId = zdarzenie.data?.email_id;
+    if (los && emailId && naglowki.id) {
+      await wPuli(z, "zakup", (db) => zapiszLosMaila(db, { idZdarzenia: `resend:${naglowki.id}`, emailId, los, teraz }));
     }
     return json({ received: true });
   });

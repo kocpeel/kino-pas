@@ -6,6 +6,7 @@ import { zegarSystemowy, type Zegar } from "../czas";
 import { wczytajKonfiguracje, type Konfiguracja } from "../config";
 import type { SeansNaLiscie, SzczegolySeansu } from "../domain/typy";
 import { bramkaZeSrodowiska } from "../platnosci/stripe";
+import { uslugaPunktowZeSrodowiska } from "../punkty/usluga";
 import { CacheZLimitem } from "../resilience/cache";
 import type { SalaSeansu } from "../push/sala-seansu";
 import { adresSaliDev, czyNextDev } from "../push/tryb-dev";
@@ -24,6 +25,11 @@ export interface Bindingi {
   STRIPE_WEBHOOK_SECRET?: string;
   /** Tylko testy e2e: adres sztucznego Stripe'a. */
   STRIPE_API_BASE?: string;
+  VOUCHERIFY_APP_ID?: string;
+  VOUCHERIFY_SECRET_KEY?: string;
+  VOUCHERIFY_API_URL?: string;
+  VOUCHERIFY_CAMPAIGN_ID?: string;
+  RESEND_WEBHOOK_SECRET?: string;
   [zmienna: string]: unknown;
 }
 
@@ -140,5 +146,8 @@ export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {})
       : powiadamiaczSal(env.SALE, opcje.wTle),
     platnosci: bramkaZeSrodowiska(env),
     sekretWebhooka: env.STRIPE_WEBHOOK_SECRET,
+    // W `next dev` obiektu limitera nie ma (żyje w worker.ts), więc budżet liczy tylko Voucherify (429).
+    punkty: uslugaPunktowZeSrodowiska(czyNextDev() ? { ...env, LIMITER: undefined } : env),
+    sekretWebhookaResend: env.RESEND_WEBHOOK_SECRET,
   };
 }

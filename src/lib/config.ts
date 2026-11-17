@@ -20,6 +20,11 @@ export interface Konfiguracja {
   maxZapisow: number;
   /** Opóźnienie D1, powyżej którego load shedding zmniejsza pule (0 wyłącza). */
   celOpoznieniaBazyMs: number;
+  /** Budżet wywołań Voucherify na godzinę (sandbox przyjmuje 100) i jego część na odczyty salda. */
+  wywolanVoucherifyNaGodzine: number;
+  odczytowVoucherifyNaGodzine: number;
+  /** Jak długo saldo punktów z pamięci podręcznej uchodzi za aktualne. */
+  swiezoscSaldaMs: number;
 }
 
 export class BladKonfiguracji extends Error {
@@ -58,5 +63,8 @@ export function wczytajKonfiguracje(env: Zmienne): Konfiguracja {
     maxOdczytow: liczbaCalkowita(env, "LOAD_SHED_MAX_READS", 64, 1, 10_000),
     maxZapisow: liczbaCalkowita(env, "LOAD_SHED_MAX_WRITES", 32, 1, 10_000),
     celOpoznieniaBazyMs: liczbaCalkowita(env, "LOAD_SHED_DB_LATENCY_TARGET_MS", 800, 0, 30_000),
+    wywolanVoucherifyNaGodzine: liczbaCalkowita(env, "VOUCHERIFY_CALLS_PER_HOUR", 90, 1, 1_000_000),
+    odczytowVoucherifyNaGodzine: liczbaCalkowita(env, "VOUCHERIFY_READS_PER_HOUR", 40, 0, 1_000_000),
+    swiezoscSaldaMs: liczbaCalkowita(env, "LOYALTY_CACHE_SECONDS", 30, 0, 86_400) * 1000,
   };
 }

@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit",
     "lint:wycieki": "node scripts/sprawdz-stan-modulu.mjs",
     "lint:sekrety": "node scripts/sprawdz-sekrety.mjs",
+    "voucherify:kampania": "node scripts/voucherify-kampania.mjs",
     "seed:generuj": "node seed/generuj-seed.ts > seed/seed.sql",
     "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "db:seed:local": "wrangler d1 execute DB --local --file seed/seed.sql",
@@ -33,7 +34,7 @@
     "test:obciazenie": "node tests/obciazenie/obciazenie.mjs",
     "cf:whoami": "node scripts/cloudflare.mjs wrangler whoami",
     "staging:deploy": "opennextjs-cloudflare build && node scripts/cloudflare.mjs opennextjs-cloudflare deploy --env staging",
-    "staging:db": "node scripts/cloudflare.mjs wrangler d1 migrations apply DB --remote --env staging && node scripts/cloudflare.mjs wrangler d1 execute DB --remote --env staging --command \"DELETE FROM seats; DELETE FROM events; DELETE FROM reservations; DELETE FROM inbox; DELETE FROM outbox;\" && node scripts/cloudflare.mjs wrangler d1 execute DB --remote --env staging --file seed/seed.sql",
+    "staging:db": "node scripts/cloudflare.mjs wrangler d1 migrations apply DB --remote --env staging && node scripts/cloudflare.mjs wrangler d1 execute DB --remote --env staging --command \"DELETE FROM seats; DELETE FROM events; DELETE FROM reservations; DELETE FROM inbox; DELETE FROM outbox; DELETE FROM sagas; DELETE FROM loyalty_accounts;\" && node scripts/cloudflare.mjs wrangler d1 execute DB --remote --env staging --file seed/seed.sql",
     "test:obciazenie:k6": "k6 run tests/obciazenie/w1-ten-sam-fotel.js"
   },
   "dependencies": {

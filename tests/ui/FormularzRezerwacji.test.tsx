@@ -8,16 +8,31 @@ vi.mock("next/navigation", () => mockNavigation());
 vi.mock("next/link", () => mockLink());
 
 const utworzRezerwacje = vi.fn();
+const pobierzSaldo = vi.fn();
 vi.mock("@/lib/klient/api", async (oryginal) => ({
   ...(await oryginal<typeof import("@/lib/klient/api")>()),
   utworzRezerwacje: (...argumenty: unknown[]) => utworzRezerwacje(...argumenty),
+  pobierzSaldo: (...argumenty: unknown[]) => pobierzSaldo(...argumenty),
 }));
 
 const { FormularzRezerwacji } = await import("@/components/rezerwacja/FormularzRezerwacji");
 
 beforeEach(() => {
   utworzRezerwacje.mockReset();
+  pobierzSaldo.mockReset();
+  pobierzSaldo.mockResolvedValue({ email: "jan@example.com", points: 1000 });
   router.push.mockReset();
+});
+
+describe("FormularzRezerwacji: saldo punktów (etap III)", () => {
+  it("po wpisaniu poprawnego e-maila pokazuje saldo, pytając raz, nie przy każdym klawiszu", async () => {
+    const uzytkownik = userEvent.setup();
+    render(<FormularzRezerwacji eventId="metropolis" seatId="F7" />);
+    await uzytkownik.type(screen.getByLabelText("E-mail"), "Jan@Example.com");
+    expect(await screen.findByText(/1000 pkt/)).toBeInTheDocument();
+    expect(pobierzSaldo).toHaveBeenCalledTimes(1);
+    expect(pobierzSaldo).toHaveBeenCalledWith("jan@example.com", expect.anything());
+  });
 });
 
 async function wypelnij(imie = "Jan", email = "jan@example.com") {

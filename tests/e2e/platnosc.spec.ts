@@ -56,7 +56,8 @@ test("webhook się spóźnia: „płatność w toku…” sama zamienia się w b
 
   await expect(page.locator(".bilet__kod")).toHaveText(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/);
   await expect(page.getByText("Płatność w toku…")).toHaveCount(0);
-  await expect(page.getByText(/Zapłacono 32 zł/)).toBeVisible();
+  await expect(page.getByText("Zapłacono kartą")).toBeVisible();
+  await expect(page.locator(".podsumowanie-zakupu")).toContainText("32 zł");
 });
 
 test("Stripe powtarza webhook: jeden bilet i ten sam kod", async ({ page, request }) => {

@@ -3,6 +3,7 @@
 
 import type { Zegar } from "./czas";
 import type { Konfiguracja } from "./config";
+import type { UslugaPunktow } from "./domain/konto-punktowe";
 import type { BramkaPlatnosci } from "./domain/platnosc";
 import type { SeansNaLiscie, SzczegolySeansu } from "./domain/typy";
 import type { CacheZLimitem } from "./resilience/cache";
@@ -37,4 +38,8 @@ export interface Zaleznosci {
   platnosci?: BramkaPlatnosci | undefined;
   /** Sekret do sprawdzania podpisu webhooków. */
   sekretWebhooka?: string | undefined;
+  /** Program punktowy (Voucherify). undefined = brak kluczy: punkty odpowiadają 503, płatność bez punktów działa. */
+  punkty?: UslugaPunktow | undefined;
+  /** Sekret webhooka Resend (Svix): los wysłanego maila. */
+  sekretWebhookaResend?: string | undefined;
 }

@@ -1,6 +1,7 @@
 "use client";
 
-// Karta rezerwacji: „Trzymamy Twój fotel jeszcze mm:ss”, podsumowanie, cena i „Zapłać 32 zł”.
+// Karta rezerwacji: „Trzymamy Twój fotel jeszcze mm:ss”, podsumowanie, cena, pole „Użyj punktów” (etap III)
+// i „Zapłać 22 zł”, czyli kwota do dopłaty kartą.
 // Tu wraca też klient, który przerwał płatność. Stan bierzemy z serwera, bo to on decyduje,
 // a sessionStorage to tylko imię i e-mail do podsumowania oraz dane na czas pierwszego odczytu.
 // Po zerze (albo po 410 z serwera) przełącza się na stan „wygasła”.
@@ -13,12 +14,14 @@ import { IkonaZegar } from "@/components/ui/Ikony";
 import { LinkPrzycisk, Przycisk } from "@/components/ui/Przycisk";
 import { Szkielet } from "@/components/ui/Szkielet";
 import type { StanRezerwacji } from "@/lib/domain/typy";
+import { doZaplatyKarta } from "@/lib/domain/punkty";
 import { opisMiejsca } from "@/lib/domain/uklad-sali";
 import { formatujCene } from "@/lib/format";
 import { BladApi, czyPrzerwane, pobierzRezerwacje, utworzPlatnosc } from "@/lib/klient/api";
 import { opiszBlad, type OpisBleduUi } from "@/lib/klient/komunikaty";
 import { przejdzDoPlatnosci } from "@/lib/klient/przekierowanie";
 import { odczytajRezerwacje, type ZapisRezerwacji } from "@/lib/klient/sesja";
+import { PolePunktow } from "./PolePunktow";
 
 export const PROG_OSTRZEZENIA_MS = 60_000;
 
@@ -51,6 +54,8 @@ export function Licznik({ reservationId, eventId, seatId, seans, przerwano = fal
   const [brakRezerwacji, ustawBrakRezerwacji] = useState(false);
   const [wygaslaNaSerwerze, ustawWygaslaNaSerwerze] = useState(false);
   const [placenie, ustawPlacenie] = useState(false);
+  const [punkty, ustawPunkty] = useState(0);
+  const [odswiezenieSalda, ustawOdswiezenieSalda] = useState(0);
   const [blad, ustawBlad] = useState<OpisBleduUi | null>(null);
   const [ogloszenie, ustawOgloszenie] = useState("");
   const wTrakcieRef = useRef(false);
@@ -123,8 +128,12 @@ export function Licznik({ reservationId, eventId, seatId, seans, przerwano = fal
     }
   }, [wygasla]);
 
+  // Punkty ustalone przy pierwszej płatności wygrywają z polem: serwer i tak policzy sesję od nich.
+  const ustalonePunkty = serwer?.stan.pointsUsed ?? 0;
+  const punktyPlatnosci = ustalonePunkty > 0 ? ustalonePunkty : punkty;
   const cena = amount !== null ? formatujCene(amount) : null;
-  const etykietaZaplac = cena ? `Zapłać ${cena}` : "Zapłać";
+  const doZaplaty = amount !== null ? formatujCene(doZaplatyKarta(amount, punktyPlatnosci)) : null;
+  const etykietaZaplac = doZaplaty ? `Zapłać ${doZaplaty}` : "Zapłać";
 
   async function zaplac() {
     if (wTrakcieRef.current || wygasla) return;
@@ -134,7 +143,10 @@ export function Licznik({ reservationId, eventId, seatId, seans, przerwano = fal
     const kontroler = new AbortController();
     kontrolerRef.current = kontroler;
     try {
-      const { url } = await utworzPlatnosc(reservationId, { sygnal: kontroler.signal });
+      const { url } = await utworzPlatnosc(reservationId, {
+        sygnal: kontroler.signal,
+        ...(punktyPlatnosci > 0 ? { punkty: punktyPlatnosci } : {}),
+      });
       // Przycisk zostaje zablokowany do końca nawigacji.
       przejdzDoPlatnosci(url);
     } catch (bladZadania) {
@@ -146,6 +158,9 @@ export function Licznik({ reservationId, eventId, seatId, seans, przerwano = fal
         return;
       } else {
         ustawBlad(opiszBlad(bladZadania));
+        // Saldo albo ustalone punkty zmieniły się po stronie serwera: pokazujemy aktualne.
+        if (bladZadania instanceof BladApi && bladZadania.kod === "not_enough_points") ustawOdswiezenieSalda((n) => n + 1);
+        if (bladZadania instanceof BladApi && bladZadania.kod === "points_locked") void sprawdzStan();
       }
       wTrakcieRef.current = false;
       ustawPlacenie(false);
@@ -249,13 +264,35 @@ export function Licznik({ reservationId, eventId, seatId, seans, przerwano = fal
             <dd>{zapis.email}</dd>
           </>
         ) : null}
-        {cena ? (
+        {cena && punktyPlatnosci > 0 ? (
           <>
-            <dt>Do zapłaty</dt>
-            <dd className="seans__cena">{cena}</dd>
+            <dt>Cena</dt>
+            <dd>{cena}</dd>
+            <dt>Punktami</dt>
+            <dd>
+              −{formatujCene(punktyPlatnosci)} ({punktyPlatnosci} pkt)
+            </dd>
+          </>
+        ) : null}
+        {doZaplaty ? (
+          <>
+            <dt>{punktyPlatnosci > 0 ? "Dopłata kartą" : "Do zapłaty"}</dt>
+            <dd className="seans__cena">{doZaplaty}</dd>
           </>
         ) : null}
       </dl>
+
+      {amount !== null ? (
+        <PolePunktow
+          email={zapis?.email ?? null}
+          amount={amount}
+          punkty={punkty}
+          onZmiana={ustawPunkty}
+          ustalone={ustalonePunkty}
+          wylaczone={placenie}
+          odswiezenie={odswiezenieSalda}
+        />
+      ) : null}
 
       {blad ? (
         <div className="banery">

@@ -51,6 +51,24 @@ export async function czytajObiektJson(zadanie: Request, maxBajtow = MAX_ROZMIAR
   return dane as Record<string, unknown>;
 }
 
+/**
+ * Ciało, które może być puste (np. POST checkout: bez ciała działa jak w etapie II). Pole spoza kontraktu,
+ * np. `amount`, jest ignorowane, a zły JSON z nagłówkiem application/json to 400.
+ */
+export async function czytajOpcjonalnyObiektJson(zadanie: Request, maxBajtow = MAX_ROZMIAR_CIALA): Promise<Record<string, unknown>> {
+  const tekst = (await czytajTekstZLimitem(zadanie, maxBajtow)).trim();
+  if (!tekst) return {};
+  const json = /^application\/json\b/i.test(zadanie.headers.get("content-type") ?? "");
+  let dane: unknown;
+  try {
+    dane = JSON.parse(tekst);
+  } catch {
+    if (!json) return {};
+    throw new BladDomenowy("NIEPOPRAWNE_DANE", { komunikat: "Niepoprawny JSON." });
+  }
+  return typeof dane === "object" && dane !== null && !Array.isArray(dane) ? (dane as Record<string, unknown>) : {};
+}
+
 export function kluczIdempotencji(zadanie: Request): string | undefined {
   const klucz = zadanie.headers.get("idempotency-key");
   if (klucz === null) return undefined;

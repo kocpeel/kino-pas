@@ -7,3 +7,13 @@ STRIPE_SECRET_KEY=sk_test_...
 # Sekret webhooka: wypisuje go `stripe listen --forward-to localhost:3000/api/webhooks/stripe`.
 # Bez Stripe CLI: dowolny tekst i `npm run stripe:nasluch`.
 STRIPE_WEBHOOK_SECRET=whsec_...
+
+# Etap III (opcjonalne lokalnie: bez nich punkty i maile odpowiadają 503, a płatność bez punktów działa).
+# Voucherify: projekt Sandbox → Project Settings → Application Keys; kampania z `npm run voucherify:kampania`.
+VOUCHERIFY_APP_ID=
+VOUCHERIFY_SECRET_KEY=
+VOUCHERIFY_API_URL=https://api.voucherify.io
+VOUCHERIFY_CAMPAIGN_ID=
+# Resend: API Keys. Bez własnej domeny maile dochodzą tylko do właściciela konta i na adresy testowe.
+RESEND_API_KEY=
+RESEND_WEBHOOK_SECRET=

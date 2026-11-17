@@ -1,6 +1,8 @@
 // 📤 Outbox: te same pola i te same operacje co kolejka jobs z E06 (claim → praca → ack, ponowienia, DLQ).
 // Job w trakcie pracy jest niewidoczny dla innych aż do `visibleAt`. Gdy worker padnie, job sam wróci.
 
+import { zdanieZakonczKompensacje } from "./zapytania-punktow";
+
 export interface JobOutboxu {
   id: string;
   task: string;
@@ -30,11 +32,16 @@ export async function potwierdzJob(db: D1Database, id: string, teraz: number): P
   await db.prepare(SQL_ACK).bind(id, teraz).run();
 }
 
-/** Ack zwrotu razem z zapisem jego skutku u nas. */
+export function zdanieAck(db: D1Database, id: string, teraz: number): D1PreparedStatement {
+  return db.prepare(SQL_ACK).bind(id, teraz);
+}
+
+/** Ack zwrotu razem z zapisem jego skutku u nas; kompensacja sagi kończy się, jeśli punkty też już wróciły. */
 export async function potwierdzZwrot(db: D1Database, id: string, reservationId: string, teraz: number): Promise<void> {
   await db.batch([
     db.prepare(SQL_ACK).bind(id, teraz),
     db.prepare(`UPDATE reservations SET refundStatus = 'done' WHERE id = ?1`).bind(reservationId),
+    zdanieZakonczKompensacje(db, reservationId, teraz),
   ]);
 }
 
@@ -55,6 +62,15 @@ export async function jobDoDlq(db: D1Database, id: string, blad: string): Promis
 
 export async function oznaczNieudanyZwrot(db: D1Database, reservationId: string): Promise<void> {
   await db.prepare(`UPDATE reservations SET refundStatus = 'failed' WHERE id = ?1`).bind(reservationId).run();
+}
+
+/** Naliczenie albo oddanie punktów wylądowało w DLQ: strona biletu mówi o tym uczciwie. */
+export async function oznaczNieudanePunkty(db: D1Database, reservationId: string): Promise<void> {
+  await db.prepare(`UPDATE reservations SET pointsStatus = 'failed' WHERE id = ?1 AND pointsStatus = 'pending'`).bind(reservationId).run();
+}
+
+export async function oznaczNieudanyMail(db: D1Database, reservationId: string): Promise<void> {
+  await db.prepare(`UPDATE reservations SET emailStatus = 'failed' WHERE id = ?1 AND emailStatus = 'pending'`).bind(reservationId).run();
 }
 
 export async function policzDlq(db: D1Database): Promise<number> {

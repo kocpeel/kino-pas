@@ -10,17 +10,19 @@ import { Baner } from "@/components/ui/Baner";
 import { LinkPrzycisk, Przycisk } from "@/components/ui/Przycisk";
 import { Szkielet } from "@/components/ui/Szkielet";
 import type { StanRezerwacji } from "@/lib/domain/typy";
-import { formatujCene } from "@/lib/format";
 import { BladApi, pobierzRezerwacje } from "@/lib/klient/api";
 import { opiszBlad } from "@/lib/klient/komunikaty";
 import { odczytajKodBiletu, zapiszKodBiletu } from "@/lib/klient/sesja";
 import { Bilet, type DaneBiletu } from "./Bilet";
+import { PodsumowanieZakupu } from "./PodsumowanieZakupu";
 
 const CZAS_TOASTU_MS = 2500;
 const INTERWAL_MS = 1500;
 const MAX_INTERWAL_MS = 5000;
 /** Webhook zwykle dociera w kilka sekund. Dłużej: mówimy, co się dzieje, i dajemy drogę z powrotem. */
 const DLUGIE_CZEKANIE_MS = 20_000;
+/** Po bilecie czekamy jeszcze na kroki sagi (punkty, mail: Cron co minutę), ale nie bez końca. */
+const MAX_CZEKANIE_NA_KROKI_MS = 3 * 60_000;
 
 interface Props {
   reservationId: string;
@@ -36,11 +38,22 @@ function czyBrak(blad: unknown): boolean {
 }
 
 function tekstZwrotu(stan: StanRezerwacji): string {
+  const punkty =
+    stan.pointsUsed > 0
+      ? stan.pointsStatus === "failed"
+        ? ` Wydanych punktów (${stan.pointsUsed} pkt) nie udało się oddać automatycznie: zajmie się tym obsługa.`
+        : ` Wydane punkty (${stan.pointsUsed} pkt) wracają na Twoje konto.`
+      : "";
   if (stan.refund === "failed") {
-    return "Płatność dotarła po czasie, a automatyczny zwrot się nie udał. Obsługa zwróci pieniądze ręcznie.";
+    return `Płatność dotarła po czasie, a automatyczny zwrot się nie udał. Obsługa zwróci pieniądze ręcznie.${punkty}`;
   }
-  if (stan.refund) return "Płatność dotarła po czasie, więc bilet nie powstał. Pieniądze wracają na Twoją kartę.";
-  return "Rezerwacja wygasła, zanim dotarła płatność, a fotel wrócił do puli.";
+  if (stan.refund) return `Płatność dotarła po czasie, więc bilet nie powstał. Pieniądze wracają na Twoją kartę.${punkty}`;
+  return `Rezerwacja wygasła, zanim dotarła płatność, a fotel wrócił do puli.${punkty}`;
+}
+
+/** Bilet jest, ale kroki sagi po nim (naliczenie punktów, mail) jeszcze trwają: odpytujemy dalej, wolniej. */
+function czyKrokiWToku(stan: StanRezerwacji | undefined): boolean {
+  return stan?.status === "paid" && (stan.pointsStatus === "pending" || stan.emailStatus === "pending");
 }
 
 export function AkcjeBiletu({ reservationId, dane, sesjaStripe = null, adresRezerwacji }: Props) {
@@ -71,11 +84,14 @@ export function AkcjeBiletu({ reservationId, dane, sesjaStripe = null, adresReze
     pierwszeZaMs: 0,
     maxPorazek: 6,
     wlaczony: odpytywanie,
-    czyZmiana: (poprzedni, nowy) => poprzedni?.status !== nowy.status,
+    czyZmiana: (poprzedni, nowy) =>
+      poprzedni?.status !== nowy.status ||
+      poprzedni?.pointsStatus !== nowy.pointsStatus ||
+      poprzedni?.emailStatus !== nowy.emailStatus,
   });
 
   useEffect(() => {
-    if ((stan && stan.status !== "held") || czyBrak(blad)) ustawOdpytywanie(false);
+    if ((stan && stan.status !== "held" && !czyKrokiWToku(stan)) || czyBrak(blad)) ustawOdpytywanie(false);
     if (stan?.code) zapiszKodBiletu(reservationId, stan.code);
   }, [stan, blad, reservationId]);
 
@@ -84,6 +100,13 @@ export function AkcjeBiletu({ reservationId, dane, sesjaStripe = null, adresReze
     const timer = setTimeout(() => ustawDlugoCzekamy(true), DLUGIE_CZEKANIE_MS);
     return () => clearTimeout(timer);
   }, [dlugoCzekamy, odpytywanie]);
+
+  const krokiWToku = czyKrokiWToku(stan);
+  useEffect(() => {
+    if (!krokiWToku) return;
+    const timer = setTimeout(() => ustawOdpytywanie(false), MAX_CZEKANIE_NA_KROKI_MS);
+    return () => clearTimeout(timer);
+  }, [krokiWToku]);
 
   useEffect(() => () => clearTimeout(timerToastu.current), []);
 
@@ -193,11 +216,8 @@ export function AkcjeBiletu({ reservationId, dane, sesjaStripe = null, adresReze
             Wróć do repertuaru
           </LinkPrzycisk>
         </div>
-        {kod ? (
-          <p className="notka">
-            {stan ? `Zapłacono ${formatujCene(stan.amount)}. ` : ""}Pokaż ten kod przy wejściu na salę.
-          </p>
-        ) : null}
+        {kod ? <p className="notka">Pokaż ten kod przy wejściu na salę.</p> : null}
+        {kod && stan?.status === "paid" ? <PodsumowanieZakupu stan={stan} /> : null}
       </div>
 
       <div className="sr-only" aria-live="polite">

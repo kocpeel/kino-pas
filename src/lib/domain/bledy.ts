@@ -10,6 +10,9 @@ export type RodzajBledu =
   | "PLATNOSC_WYMAGANA"
   | "ZLY_PODPIS"
   | "PLATNOSCI_NIEDOSTEPNE"
+  | "ZA_MALO_PUNKTOW"
+  | "PUNKTY_ZABLOKOWANE"
+  | "PUNKTY_NIEDOSTEPNE"
   | "KLUCZ_UZYTY"
   | "LIMIT_ZAPYTAN"
   | "LIMIT_REZERWACJI"
@@ -53,6 +56,21 @@ export const OPISY_BLEDOW: Record<RodzajBledu, OpisBledu> = {
     status: 503,
     kod: "payments_unavailable",
     komunikat: "Płatności są chwilowo niedostępne. Twoja rezerwacja jest bezpieczna, spróbuj za chwilę.",
+  },
+  ZA_MALO_PUNKTOW: {
+    status: 422,
+    kod: "not_enough_points",
+    komunikat: "Masz za mało punktów.",
+  },
+  PUNKTY_ZABLOKOWANE: {
+    status: 409,
+    kod: "points_locked",
+    komunikat: "Płatność tej rezerwacji jest już przygotowana z inną liczbą punktów.",
+  },
+  PUNKTY_NIEDOSTEPNE: {
+    status: 503,
+    kod: "points_unavailable",
+    komunikat: "Punkty są chwilowo niedostępne. Możesz zapłacić bez punktów albo spróbować za chwilę.",
   },
   KLUCZ_UZYTY: {
     status: 422,

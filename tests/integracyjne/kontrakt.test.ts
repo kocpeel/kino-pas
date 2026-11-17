@@ -120,17 +120,26 @@ describe("POST /api/webhooks/stripe i GET /api/reservations/:id", () => {
     const utworzona = await exports.default.fetch(zadanieRezerwacji({ seatId: "B3", email: "k7@example.com" }, { ip: "10.1.1.7" }));
     const { reservationId, expiresAt } = (await utworzona.json()) as { reservationId: string; expiresAt: number };
     const stan = async () => (await fetchWorkera(`/api/reservations/${reservationId}`)).json();
-    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt });
+    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt, pointsUsed: 0 });
 
     const zdarzenie = zdarzenieOplacenia(reservationId);
     const zly = await exports.default.fetch(await zadanieWebhooka(zdarzenie, { sekret: "whsec_inny" }));
     expect(zly.status).toBe(400);
-    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt });
+    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt, pointsUsed: 0 });
 
     const dobry = await exports.default.fetch(await zadanieWebhooka(zdarzenie));
     expect(dobry.status).toBe(200);
     expect(await dobry.json()).toEqual({ received: true });
-    expect(await stan()).toEqual({ status: "paid", amount: 3200, expiresAt, code: expect.stringMatching(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/) });
+    expect(await stan()).toEqual({
+      status: "paid",
+      amount: 3200,
+      expiresAt,
+      code: expect.stringMatching(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/),
+      pointsUsed: 0,
+      pointsEarned: 320,
+      pointsStatus: "pending",
+      emailStatus: "pending",
+    });
   });
 
   it("nieznana rezerwacja 404, zły identyfikator 400", async () => {

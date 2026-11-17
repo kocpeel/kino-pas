@@ -44,6 +44,20 @@ export interface StanRezerwacji {
   code?: string;
   /** Tylko gdy płatność nie dała biletu (np. przyszła po wygaśnięciu) i pieniądze wracają do klienta. */
   refund?: "pending" | "done" | "failed";
+  /** Ile punktów klient wydał na tę rezerwację (0 = bez punktów). */
+  pointsUsed: number;
+  /** Punkty za zakup: tylko po opłaceniu. */
+  pointsEarned?: number;
+  /** Operacja na punktach po zakupie: naliczenie (bilet) albo oddanie wydanych punktów (brak biletu). */
+  pointsStatus?: "pending" | "done" | "failed";
+  /** Mail z biletem. */
+  emailStatus?: "pending" | "sent" | "delivered" | "bounced" | "failed";
+}
+
+/** Odpowiedź GET /api/loyalty. */
+export interface SaldoPunktow {
+  email: string;
+  points: number;
 }
 
 /** Odpowiedź POST /api/reservations/:id/checkout. */

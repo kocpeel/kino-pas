@@ -1,4 +1,4 @@
-# Lista zagrożeń: Stripe jako cudzy system
+# Lista zagrożeń: cudze systemy (Stripe, Voucherify, Resend)
 
 Stripe ma własne dane i własne awarie, a nasza transakcja obejmuje tylko naszą bazę. Każde zagrożenie niżej ma kartę
 (strażnika w kodzie) i test. Oznaczenia narzędzi jak w E07: 📤 outbox, 🔑 klucz idempotencji, 📥 inbox, ⚖️ świadomy wybór.
@@ -31,8 +31,34 @@ wraca do klienta. Bilet po czasie nie powstaje nigdy, a fotel ma zawsze jednego 
 | D15 | Limity API Stripe'a | Fala kliknięć zużywa limit | Do Stripe'a idzie tylko pierwsze „Zapłać” danej rezerwacji, kolejne biorą sesję z bazy. Rezerwacje mają ścisły limit na IP. 429 od Stripe'a to 503 z `Retry-After`. | `platnosci.test.ts` |
 | D16 | Wyciek linku do biletu | Kod widoczny dla kogoś, kto dostał link | ⚖️ Świadomy wybór: sekret rezerwacji wycofany (`decyzje.md`, sekcja 12), bo kontrakt daje kod po samym identyfikatorze. To losowy UUID, którego nie da się zgadnąć, a kod nie zawiera danych osobowych. | `kontrakt.test.ts` |
 
+## Etap III: Voucherify i Resend
+
+Saldo punktów prowadzi Voucherify, a maile wysyła Resend. Obie usługi są cudze jak Stripe: mogą nie odpowiedzieć,
+odmówić albo wykonać operację i nie zdążyć tego powiedzieć. Kroki z nimi są częścią sagi zakupu
+([kontrakt-wewnetrzny.md](kontrakt-wewnetrzny.md#etap-iii-saga-zakupu-z-punktami-e08)).
+
+| Nr | Zagrożenie | Skutek bez ochrony | Karta (strażnik) | Test |
+|---|---|---|---|---|
+| D17 | Limit sandboxa Voucherify: 100 wywołań na godzinę, przekroczenie blokuje API | Zalew odczytów salda zjada wywołania potrzebne do zakupów | Własny budżet w Durable Objekcie (90/h, odczyty najwyżej 40/h), pamięć salda 30 s, nieznany e-mail jednym odczytem, 429 z `Retry-After` | `punkty.test.ts` (budżet), jednostkowe |
+| D18 | Voucherify bez kluczy idempotencji | Ponowiona zmiana salda dubluje punkty (wydanie albo naliczenie dwa razy) | `source_id` każdej operacji, notatka „niepewne” przed wywołaniem, historia karty przed powtórką | `punkty.test.ts` (zgubiona odpowiedź) |
+| D19 | Punkty zeszły, a sesja płatności nie powstała albo nikt nie zapłacił | Klient traci punkty bez biletu | ↩️ Kompensacja: strażnik po końcu rezerwacji oddaje punkty (także gdy sesji nie było) | `punkty.test.ts` (kompensacja) |
+| D20 | Płatność po czasie albo zła kwota przy zakupie z punktami | Pieniądze i punkty pobrane bez biletu | Zwrot na kartę i oddanie punktów w tej samej transakcji co decyzja „bez biletu” | `punkty.test.ts` |
+| D21 | Dwie rezerwacje jednego klienta płacą punktami naraz | Te same punkty wydane dwa razy (albo saldo na minusie) | 🔒 Blokada konta: sprawdzenie salda i wydanie po kolei | `punkty.test.ts` |
+| D22 | Podwójne „Zapłać” z punktami | Punkty schodzą dwa razy | Blokada konta + `pointsUsed` sprawdzane pod blokadą + ta sama sesja Stripe'a | `punkty.test.ts`, `Licznik.test.tsx` |
+| D23 | Voucherify nie odpowiada przy checkoucie | Klient nie może kupić biletu | 503 `points_unavailable` z `Retry-After`; płatność bez punktów działa; bezpiecznik po serii awarii | `punkty.test.ts` |
+| D24 | Saldo zmienione poza sklepem (kasy, aplikacja) albo karta założona tam | Pokazujemy albo wydajemy nieaktualne saldo, klientowi z kas pokazujemy 1000 | Voucherify jest źródłem prawdy: pamięć tylko 30 s, nieznany e-mail też sprawdzamy w Voucherify, przed wydaniem świeże saldo, odmowa Voucherify = 422 | `punkty.test.ts` |
+| D25 | Punkty powitalne dwa razy (np. karta z przerwanej próby) albo dla karty z innego kanału | Klient dostaje 2000 zamiast 1000 | `welcomeAt` u nas, `powitanie:<email>` w historii karty; notatka `cardRequestedAt` przed założeniem karty: karta bez niej przyszła z aplikacji albo kas i powitalnych od nas nie dostaje (Voucherify tego nie powie: metadane zapisu trafiają do publikacji, nie na kartę) | `punkty.test.ts` |
+| D26 | Resend bez własnej domeny: adres spoza właściciela konta i adresów testowych | 403 przy każdej próbie, job w nieskończoność | Trwała odmowa = `emailStatus: failed` bez DLQ; bilet i podsumowanie są na stronie | `punkty.test.ts` |
+| D27 | Ponowiona wysyłka maila | Dwa maile z biletem | `Idempotency-Key: bilet/<id>` (Resend pamięta 24 h), outbox żyje krócej | `punkty.test.ts` |
+| D28 | Limit Resend (10 żądań/s, 100 maili dziennie na darmowym planie) | Maile przepadają | 429 = job czeka do `Retry-After` albo do północy UTC (dzienny limit), bez liczenia porażki | jednostkowe |
+| D29 | Mail odrzucony po wysłaniu (np. bounced@resend.dev) | Klient myśli, że mail dojdzie | Webhook Resend z podpisem Svix i inboxem: `emailStatus: bounced`, strona mówi to wprost | `punkty.test.ts` |
+| D30 | Brak nagłówka User-Agent | Resend odrzuca żądanie (403) | Zawsze wysyłamy `User-Agent` | przegląd kodu |
+| D32 | Voucherify obcina odjęcie do salda zamiast odmówić (sprawdzone na sandboksie) | Zapisane `pointsUsed` większe niż to, co zeszło: rabat bez pokrycia | Liczy się faktyczna zmiana z odpowiedzi (`points`); gdy zeszło mniej, korekta oddaje to, co zeszło, i 422; każda próba ma własny `source_id`; kompensacje liczą z historii wydanie minus korektę | `punkty.test.ts` (obcięte odjęcie), sandbox |
+| D31 | Klucze Voucherify i Resend | Wyciek z repozytorium albo z przeglądarki | Tylko sekrety Workerów; `npm run lint:sekrety` szuka wzorców i dokładnych wartości z lokalnych plików env | CI |
+
 ## Czego ta lista nie obejmuje
 
 - **Spory i chargebacki:** w trybie testowym ich nie ma.
-- **Mail z biletem:** nie wysyłamy go. Kod zostaje w przeglądarce, a gdy klient ją wyczyści, po biletu trzeba iść do obsługi.
+- **Mail do każdego klienta:** bez własnej domeny Resend wysyła tylko do właściciela konta i na adresy testowe. Pozostali
+  klienci mają bilet i podsumowanie na stronie biletu, a strona mówi, że maila nie wysłaliśmy (D26).
 - **Globalny stan bezpiecznika:** liczy się osobno w każdym izolacie, więc przy awarii Stripe'a chwilę potrwa, zanim otworzy się wszędzie.

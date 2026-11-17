@@ -1,7 +1,7 @@
 // Klient API dla przeglądarki: timeout na każdym fetchu, ponawianie GET z backoffem
 // i jitterem, POST rezerwacji ponawiany tylko z tym samym Idempotency-Key.
 
-import type { SesjaPlatnosci, StanRezerwacji, SzczegolySeansu, UtworzonaRezerwacja } from "../domain/typy";
+import type { SaldoPunktow, SesjaPlatnosci, StanRezerwacji, SzczegolySeansu, UtworzonaRezerwacja } from "../domain/typy";
 
 export const TIMEOUT_MS = 8000;
 const BAZA_BACKOFF_MS = 300;
@@ -225,10 +225,24 @@ export function pobierzRezerwacje(reservationId: string, opcje: OpcjeZadania = {
 /** Serwer pyta Stripe'a, a ten ma własne timeouty i ponowienia, więc czekamy dłużej niż zwykle. */
 const TIMEOUT_PLATNOSCI_MS = 20_000;
 
-/** Bezpieczne do ponawiania: każda próba dla tej rezerwacji daje tę samą sesję płatności. */
-export function utworzPlatnosc(reservationId: string, opcje: OpcjeZadania = {}): Promise<SesjaPlatnosci> {
-  const { sygnal, proby = 2, timeoutMs = TIMEOUT_PLATNOSCI_MS } = opcje;
+/**
+ * Bezpieczne do ponawiania: każda próba dla tej rezerwacji daje tę samą sesję płatności, a punkty schodzą
+ * z konta raz. Bez `punkty` (albo 0) płatność jak w etapie II.
+ */
+export function utworzPlatnosc(reservationId: string, opcje: OpcjeZadania & { punkty?: number } = {}): Promise<SesjaPlatnosci> {
+  const { sygnal, proby = 2, timeoutMs = TIMEOUT_PLATNOSCI_MS, punkty } = opcje;
+  const init: RequestInit = punkty
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points: punkty }) }
+    : { method: "POST" };
   return zPonowieniami(proby, sygnal, () =>
-    wykonaj<SesjaPlatnosci>(`/api/reservations/${encodeURIComponent(reservationId)}/checkout`, { method: "POST" }, sygnal, timeoutMs),
+    wykonaj<SesjaPlatnosci>(`/api/reservations/${encodeURIComponent(reservationId)}/checkout`, init, sygnal, timeoutMs),
+  ).then((o) => o.dane);
+}
+
+/** Saldo punktów klienta. E-mail idzie w adresie zapytania (tak mówi kontrakt), ale fetch nie trafia do historii. */
+export function pobierzSaldo(email: string, opcje: OpcjeZadania = {}): Promise<SaldoPunktow> {
+  const { sygnal, proby = 2, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<SaldoPunktow>(`/api/loyalty?email=${encodeURIComponent(email)}`, { cache: "no-store" }, sygnal, timeoutMs),
   ).then((o) => o.dane);
 }

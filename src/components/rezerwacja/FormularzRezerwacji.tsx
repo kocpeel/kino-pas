@@ -15,6 +15,7 @@ import { KOMUNIKATY_POL, normalizujEmail, normalizujImie } from "@/lib/domain/da
 import { BladApi, czyPrzerwane, nowyKluczIdempotencji, utworzRezerwacje } from "@/lib/klient/api";
 import { opiszBlad, type OpisBleduUi } from "@/lib/klient/komunikaty";
 import { kluczFormularza, usunKluczFormularza, zapiszRezerwacje } from "@/lib/klient/sesja";
+import { SaldoPunktow } from "./SaldoPunktow";
 import { czyWiadomoscStanu, sciezkaNaZywo } from "@/lib/push/protokol";
 
 type NazwaPola = "name" | "email";
@@ -162,8 +163,9 @@ export function FormularzRezerwacji({ eventId, seatId, adresKanalu }: Props) {
         onChange={(e) => zmien("email", e.target.value)}
         onBlur={() => opusc("email")}
         blad={bledyPol.email}
-        podpowiedz="Użyjemy go tylko do tej rezerwacji."
+        podpowiedz="Do e-maila przypisane jest Twoje konto punktowe, a po zakupie wyślemy na niego bilet."
       />
+      <SaldoPunktow email={wartosci.email} />
 
       <p id="pomoc-formularza" className="pole__podpowiedz" style={{ marginBottom: "var(--odstep-4)" }}>
         Po rezerwacji fotel będzie czekał na Ciebie przez ograniczony czas. Licznik pokaże, ile go zostało.

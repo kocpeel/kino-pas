@@ -11,11 +11,13 @@ vi.mock("next/link", () => mockLink());
 
 const utworzPlatnosc = vi.fn();
 const pobierzRezerwacje = vi.fn();
+const pobierzSaldo = vi.fn();
 const przejdzDoPlatnosci = vi.fn();
 vi.mock("@/lib/klient/api", async (oryginal) => ({
   ...(await oryginal<typeof import("@/lib/klient/api")>()),
   utworzPlatnosc: (...argumenty: unknown[]) => utworzPlatnosc(...argumenty),
   pobierzRezerwacje: (...argumenty: unknown[]) => pobierzRezerwacje(...argumenty),
+  pobierzSaldo: (...argumenty: unknown[]) => pobierzSaldo(...argumenty),
 }));
 vi.mock("@/lib/klient/przekierowanie", () => ({
   przejdzDoPlatnosci: (url: string) => przejdzDoPlatnosci(url),
@@ -67,6 +69,8 @@ beforeEach(() => {
   pobierzRezerwacje.mockReset();
   pobierzRezerwacje.mockRejectedValue(new BladApi(0, "network", "Brak połączenia"));
   przejdzDoPlatnosci.mockReset();
+  pobierzSaldo.mockReset();
+  pobierzSaldo.mockResolvedValue({ email: "jan@example.com", points: 1000 });
   router.push.mockReset();
   router.replace.mockReset();
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
@@ -253,6 +257,62 @@ describe("Licznik", () => {
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByText("Nie widzimy czasu ważności tej rezerwacji")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Zapłać" })).toBeEnabled();
+  });
+
+  it("punkty: „Najwięcej” wpisuje 1000 (tyle klient ma), przycisk „Zapłać 22 zł”, checkout z punktami", async () => {
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    utworzPlatnosc.mockResolvedValue({ url: "https://checkout.stripe.test/c/pay/cs_1" });
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(pobierzSaldo).toHaveBeenCalledWith("jan@example.com", expect.anything());
+    expect(screen.getByText(/Możesz wydać najwięcej 1000 pkt/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Najwięcej" }));
+    expect(screen.getByLabelText("Użyj punktów")).toHaveValue(1000);
+    expect(screen.getByText("Dopłata kartą").nextElementSibling).toHaveTextContent("22 zł");
+    fireEvent.click(screen.getByRole("button", { name: "Zapłać 22 zł" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(utworzPlatnosc).toHaveBeenCalledWith(ID, expect.objectContaining({ punkty: 1000 }));
+  });
+
+  it("punkty: wpisana liczba ponad możliwą jest przycinana (połowa ceny albo saldo)", async () => {
+    pobierzSaldo.mockResolvedValue({ email: "jan@example.com", points: 5000 });
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    fireEvent.change(screen.getByLabelText("Użyj punktów"), { target: { value: "9999" } });
+    expect(screen.getByLabelText("Użyj punktów")).toHaveValue(1600);
+    expect(screen.getByRole("button", { name: "Zapłać 16 zł" })).toBeEnabled();
+  });
+
+  it("punkty ustalone na serwerze: pole już ich nie zmienia, przycisk pokazuje dopłatę", async () => {
+    zarezerwowano(120_000);
+    pobierzRezerwacje.mockResolvedValue({
+      dane: { status: "held", amount: 3200, expiresAt: START + 120_000, pointsUsed: 1000 },
+      status: 200,
+      przesuniecieZegara: 0,
+      etag: null,
+    });
+    renderuj(true);
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText(/Płacisz punktami/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Użyj punktów")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Zapłać 22 zł" })).toBeEnabled();
+  });
+
+  it("za mało punktów (422): komunikat i saldo czytane jeszcze raz", async () => {
+    zarezerwowano(120_000);
+    serwerTrzyma(120_000);
+    utworzPlatnosc.mockRejectedValue(new BladApi(422, "not_enough_points", "Masz 400 pkt, a chcesz wydać 1000 pkt."));
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    fireEvent.click(screen.getByRole("button", { name: "Najwięcej" }));
+    fireEvent.click(screen.getByRole("button", { name: "Zapłać 22 zł" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByRole("alert")).toHaveTextContent("Za mało punktów");
+    expect(pobierzSaldo).toHaveBeenCalledTimes(2);
   });
 
   it("po odmontowaniu nie zostaje żaden timer", async () => {
