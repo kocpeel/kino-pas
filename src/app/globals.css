@@ -1049,6 +1049,23 @@ a {
   margin-top: var(--odstep-4);
 }
 
+/* Etap IV: lista oczekujących pod mapą wyprzedanej sali i na stronie /lista/<id>. */
+.lista-oczekujacych {
+  margin-top: var(--odstep-5);
+  padding-top: var(--odstep-4);
+  border-top: 1px solid var(--kolor-obramowanie);
+}
+
+.lista-oczekujacych__tytul {
+  margin: 0 0 var(--odstep-2);
+  font-size: var(--rozmiar-l);
+}
+
+.lista-oczekujacych__opis {
+  margin: 0 0 var(--odstep-4);
+  color: var(--kolor-tekst-cichy);
+}
+
 .podsumowanie-zakupu__stan {
   font-weight: normal;
 }

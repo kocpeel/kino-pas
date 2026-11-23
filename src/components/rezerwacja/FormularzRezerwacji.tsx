@@ -94,7 +94,7 @@ export function FormularzRezerwacji({ eventId, seatId, adresKanalu }: Props) {
     try {
       const name = normalizujImie(wartosci.name) as string;
       const email = normalizujEmail(wartosci.email) as string;
-      const { dane, przesuniecieZegara } = await utworzRezerwacje({ eventId, seatId, name, email }, klucz, {
+      const { dane, przesuniecieZegara } = await utworzRezerwacje({ eventId, seatId, customerName: name, email }, klucz, {
         sygnal: kontroler.signal,
       });
       zapiszRezerwacje({
@@ -121,7 +121,7 @@ export function FormularzRezerwacji({ eventId, seatId, adresKanalu }: Props) {
         mozeNaszeRef.current = !rozstrzygniete;
         if (bladZadania.status === 400 && bladZadania.szczegoly) {
           const zSerwera = bladZadania.szczegoly;
-          ustawBledyPol({ name: zSerwera.name, email: zSerwera.email });
+          ustawBledyPol({ name: zSerwera.customerName ?? zSerwera.name, email: zSerwera.email });
         }
       }
       ustawBlad(opiszBlad(bladZadania));

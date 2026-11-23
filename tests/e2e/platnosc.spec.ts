@@ -88,7 +88,10 @@ test("płatność po wygaśnięciu rezerwacji: bez biletu, z informacją o zwroc
   await expect(page.getByRole("heading", { name: "Ta rezerwacja wygasła" })).toBeVisible();
   await expect(page.getByText(/Pieniądze wracają na Twoją kartę/)).toBeVisible();
   await expect(page.locator(".bilet__kod")).toHaveCount(0);
-  expect(await (await request.get(`/api/reservations/${id}`)).json()).toMatchObject({ status: "expired", refund: "pending" });
+  // Zwrot rusza od razu po webhooku (budzik albo praca w tle), więc może być już zrobiony.
+  const poZwrocie = (await (await request.get(`/api/reservations/${id}`)).json()) as { status: string; refund: string };
+  expect(poZwrocie.status).toBe("expired");
+  expect(["pending", "done"]).toContain(poZwrocie.refund);
 
   await page.goto(`/seans/${seans!.id}`);
   await expect(fotel(page, seatId)).not.toHaveClass(/fotel--zajety/);

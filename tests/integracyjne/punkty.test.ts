@@ -534,6 +534,21 @@ describe("kompensacja: punkty wracają, gdy biletu nie będzie", () => {
     expect((await stanRezerwacji(z, reservationId)).cialo).toMatchObject({ status: "expired", pointsStatus: "done" });
   });
 
+  it("III.B3: porzucona płatność z punktami: zaraz po expiresAt GET /api/loyalty pokazuje saldo sprzed zakupu, bez Crona", async () => {
+    const { z, konto, bramka, zegar } = srodowisko();
+    await znanyKlient(konto, "porzucil@example.com", 1500);
+    const { reservationId, expiresAt } = (await zarezerwuj(z, { seatId: "D4", email: "porzucil@example.com" })).cialo;
+    await checkout(z, reservationId, { points: 1000 });
+    expect((await saldo(z, "porzucil@example.com")).cialo.points).toBe(500);
+
+    // Żadnego przebiegu outboxu: odczyt salda sam dokańcza strażnika sesji i oddanie punktów.
+    zegar.ustaw(expiresAt + 1);
+    expect((await saldo(z, "porzucil@example.com")).cialo.points).toBe(1500);
+    expect(bramka.wygaszone).toHaveLength(1);
+    expect((await saga(reservationId))?.status).toBe("compensated");
+    // Przed expiresAt nic się nie dzieje: punkty wracają dopiero po końcu rezerwacji.
+  });
+
   it("sesja nie powstała (Stripe padł), rezerwacja wygasła: strażnik oddaje punkty", async () => {
     const { z, konto, bramka, outbox, zegar } = srodowisko();
     await znanyKlient(konto, "x@example.com", 1000);

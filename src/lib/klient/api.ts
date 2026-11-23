@@ -1,7 +1,15 @@
 // Klient API dla przeglądarki: timeout na każdym fetchu, ponawianie GET z backoffem
 // i jitterem, POST rezerwacji ponawiany tylko z tym samym Idempotency-Key.
 
-import type { SaldoPunktow, SesjaPlatnosci, StanRezerwacji, SzczegolySeansu, UtworzonaRezerwacja } from "../domain/typy";
+import type {
+  SaldoPunktow,
+  SesjaPlatnosci,
+  StanRezerwacji,
+  StanZapisuNaListe,
+  SzczegolySeansu,
+  UtworzonaRezerwacja,
+  ZapisNaListe,
+} from "../domain/typy";
 
 export const TIMEOUT_MS = 8000;
 const BAZA_BACKOFF_MS = 300;
@@ -184,7 +192,8 @@ export function nowyKluczIdempotencji(): string {
 export interface DaneRezerwacji {
   eventId: string;
   seatId: string;
-  name: string;
+  /** Imię klienta: pole kontraktu `customerName`. */
+  customerName: string;
   email: string;
 }
 
@@ -244,5 +253,39 @@ export function pobierzSaldo(email: string, opcje: OpcjeZadania = {}): Promise<S
   const { sygnal, proby = 2, timeoutMs } = opcje;
   return zPonowieniami(proby, sygnal, () =>
     wykonaj<SaldoPunktow>(`/api/loyalty?email=${encodeURIComponent(email)}`, { cache: "no-store" }, sygnal, timeoutMs),
+  ).then((o) => o.dane);
+}
+
+// ——— Etap IV: lista oczekujących ———
+
+/** Zapis na listę oczekujących wyprzedanego wydarzenia. Ten sam e-mail drugi raz oddaje ten sam zapis. */
+export function zapiszNaListe(
+  eventId: string,
+  dane: { email: string; customerName: string },
+  opcje: OpcjeZadania = {},
+): Promise<ZapisNaListe> {
+  const { sygnal, proby = 2, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<ZapisNaListe>(
+      `/api/events/${encodeURIComponent(eventId)}/waitlist`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(dane) },
+      sygnal,
+      timeoutMs,
+    ),
+  ).then((o) => o.dane);
+}
+
+export function pobierzZapisNaListe(waitlistId: string, opcje: OpcjeZadania = {}): Promise<StanZapisuNaListe> {
+  const { sygnal, proby = 1, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<StanZapisuNaListe>(`/api/waitlist/${encodeURIComponent(waitlistId)}`, { cache: "no-store" }, sygnal, timeoutMs),
+  ).then((o) => o.dane);
+}
+
+/** Wypisanie z listy: bezpieczne do ponawiania (drugie wypisanie niczego nie zmienia). */
+export function wypiszZListy(waitlistId: string, opcje: OpcjeZadania = {}): Promise<StanZapisuNaListe> {
+  const { sygnal, proby = 2, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<StanZapisuNaListe>(`/api/waitlist/${encodeURIComponent(waitlistId)}`, { method: "DELETE" }, sygnal, timeoutMs),
   ).then((o) => o.dane);
 }

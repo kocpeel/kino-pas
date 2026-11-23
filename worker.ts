@@ -2,7 +2,8 @@
 // - /api/events/:id/live (WebSocket) idzie prosto do Durable Objectu sali, bo Next.js
 //   nie potrafi zwrócić odpowiedzi 101 z WebSocketem (z limitem połączeń na IP i load sheddingiem),
 // - wszystko inne obsługuje Next.js; żądania stron dostają nonce i Content-Security-Policy (src/lib/http/csp.ts),
-// - eksportuje klasy Durable Objectów `SalaSeansu` (binding SALE) i `LimiterZadan` (binding LIMITER).
+// - eksportuje klasy Durable Objectów `SalaSeansu` (binding SALE), `LimiterZadan` (binding LIMITER)
+//   i `BudzikOutboxu` (binding BUDZIK: joby outboxu w ich terminie, src/lib/budzik).
 // Wzorzec „custom worker" z dokumentacji OpenNext dla Cloudflare.
 
 // @ts-ignore `.open-next/worker.js` powstaje dopiero przy `opennextjs-cloudflare build`
@@ -15,6 +16,7 @@ import { straznikDlaIzolatu } from "./src/lib/resilience/przeciazenie";
 
 export { SalaSeansu } from "./src/lib/push/sala-seansu";
 export { LimiterZadan } from "./src/lib/resilience/limiter-zadan";
+export { BudzikOutboxu } from "./src/lib/budzik/budzik-outboxu";
 
 function straznik(env: CloudflareEnv) {
   try {

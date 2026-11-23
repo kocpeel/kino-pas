@@ -1,4 +1,5 @@
-// Worker outboxu, uruchamiany przez Cron: claim → wywołanie cudzego systemu → ack.
+// Worker outboxu: claim → wywołanie cudzego systemu → ack. Uruchamiają go budzik outboxu (Durable Object z alarmem
+// na najbliższy job), żądania (od razu po zdarzeniu albo leniwie przy odczycie) i Cron co minutę jako siatka.
 // Outbox gwarantuje, że wiadomość wyjdzie co najmniej raz (≥1), a duplikat u dostawcy rozpoznaje
 // klucz idempotencji wzięty z joba (Stripe, Resend) albo historia karty (Voucherify nie ma kluczy).
 // Dostawca nie odpowiada? Job wróci po backoffie. Ciągle odmawia? Po limicie prób idzie do DLQ.
@@ -9,6 +10,10 @@
 //   stripe-refund         kompensacja płatności: zwrot na kartę
 //   punkty-zwrot          kompensacja wydania punktów: punkty wracają na kartę
 //   stripe-session-watch  strażnik: rozlicza zgubione webhooki, wygasza sesję po czasie i uruchamia kompensację
+//
+// Etap IV (lista oczekujących):
+//   lista-kolejka         karta B: zwolnione miejsca dla kolejnych osób z kolejki, koniec ofert
+//   mail-oferta           karta C: mail z ofertą; trwała odmowa Resend = oferta odpada, kolejka idzie dalej
 
 import type { Zegar } from "../czas";
 import {
@@ -21,6 +26,7 @@ import {
   potwierdzJob,
   potwierdzZwrot,
   wezJob,
+  wezJobPoId,
   zdanieAck,
   type JobOutboxu,
 } from "../db/zapytania-outbox";
@@ -42,8 +48,16 @@ import {
   zdanieZapiszSaldo,
   type WynikiSagi,
 } from "../db/zapytania-punktow";
+import {
+  TASK_KOLEJKA,
+  TASK_MAIL_OFERTY,
+  zapisListy,
+  zdaniaOdrzucOferte,
+  zdanieMailOfertyWyslany,
+} from "../db/zapytania-listy";
 import { BladMaila, type BramkaMaili } from "../maile/resend";
 import { mailBiletu } from "../maile/szablon-biletu";
+import { mailOferty } from "../maile/szablon-oferty";
 import { BladPunktow } from "../punkty/voucherify";
 import {
   czyBylaOperacja,
@@ -55,6 +69,7 @@ import {
   zWylacznoscia,
   type UslugaPunktow,
 } from "./konto-punktowe";
+import { przesunKolejke } from "./lista-oczekujacych";
 import {
   CO_ILE_STRAZNIK_MS,
   rozliczPlatnosc,
@@ -371,6 +386,74 @@ async function wyslijMail(db: D1Database, u: UslugiOutboxu, job: JobOutboxu, ter
   return GOTOWE;
 }
 
+function czytajKolejke(job: JobOutboxu): { eventId: string; ttlMs: number } {
+  const { eventId } = czytajDane<{ eventId: string }>(job, ["eventId"]);
+  const ttlMs = (JSON.parse(job.input) as { ttlMs?: unknown }).ttlMs;
+  if (typeof ttlMs !== "number" || !Number.isFinite(ttlMs) || ttlMs <= 0) throw new BladTrwaly("Brak ttlMs w input.");
+  return { eventId, ttlMs };
+}
+
+/**
+ * Karta B etapu IV: sprawdzenie kolejki listy oczekujących na najbliższe wygaśnięcie rezerwacji na sali. Nowe oferty
+ * mają już swój job maila (ta sama transakcja), więc ten sam przebieg outboxu je wyśle. Gdy ktoś nadal czeka, job
+ * odkłada się na następne wygaśnięcie zamiast się kończyć.
+ */
+async function sprawdzKolejke(db: D1Database, job: JobOutboxu, teraz: number): Promise<Wynik> {
+  const { eventId, ttlMs } = czytajKolejke(job);
+  const { nastepnyTermin } = await przesunKolejke(db, eventId, { teraz, ttlMs });
+  if (nastepnyTermin !== null && nastepnyTermin > teraz) return { rodzaj: "odlozony", doKiedy: nastepnyTermin };
+  await potwierdzJob(db, job.id, teraz);
+  return GOTOWE;
+}
+
+/**
+ * Karta C etapu IV: mail z ofertą (wydarzenie, miejsce, link do zapłaty, godzina, do której miejsce czeka).
+ * ⚖️ Świadome ≥1 jak mail z biletem: `Idempotency-Key: oferta/<rezerwacja>`. Oferta, która w międzyczasie się
+ * skończyła, maila już nie dostaje. Trwała odmowa Resend (np. adres spoza sandboksa) znaczy „mail nie dojdzie”:
+ * tak jak odbity mail z webhooka, oferta przechodzi na następną osobę (karta C daje znać karcie B).
+ */
+async function wyslijMailOferty(db: D1Database, u: UslugiOutboxu, job: JobOutboxu, teraz: number): Promise<Wynik> {
+  const { waitlistId, reservationId } = czytajDane<{ waitlistId: string; reservationId: string }>(job, ["waitlistId", "reservationId"]);
+  const ttlMs = Number((JSON.parse(job.input) as { ttlMs?: unknown }).ttlMs) || 15 * 60_000;
+  const zapis = await zapisListy(db, waitlistId);
+  if (!zapis || zapis.status !== "offered" || zapis.reservationId !== reservationId || !zapis.seatId || (zapis.offerExpiresAt ?? 0) <= teraz) {
+    await potwierdzJob(db, job.id, teraz);
+    return GOTOWE;
+  }
+  const maile = wymagaj(u.maile, "Resend");
+  const seans = await db
+    .prepare(`SELECT movie, startsAt, hall, price FROM events WHERE id = ?1`)
+    .bind(zapis.eventId)
+    .first<{ movie: string; startsAt: string; hall: string; price: number }>();
+  const adres = zapis.adres ?? "";
+  const zapytanie = `seans=${encodeURIComponent(zapis.eventId)}&miejsce=${encodeURIComponent(zapis.seatId)}`;
+  const mail = mailOferty({
+    email: zapis.email,
+    imie: zapis.customerName,
+    film: seans?.movie ?? null,
+    startsAt: seans?.startsAt ?? null,
+    sala: seans?.hall ?? null,
+    seatId: zapis.seatId,
+    cena: seans?.price ?? 0,
+    czekaDo: zapis.offerExpiresAt as number,
+    adresPlatnosci: `${adres}/rezerwacja/${reservationId}?${zapytanie}`,
+    adresListy: adres ? `${adres}/lista/${waitlistId}` : null,
+  });
+  try {
+    const { id } = await maile.wyslij(mail, `oferta/${reservationId}`);
+    await db.batch([zdanieAck(db, job.id, teraz), zdanieMailOfertyWyslany(db, waitlistId, reservationId, id)]);
+  } catch (blad) {
+    if (!(blad instanceof BladMaila) || blad.rodzaj !== "trwaly") throw blad;
+    console.warn(JSON.stringify({ ostrzezenie: "kasa-kino", poziom: "mail-oferty-odrzucony", waitlistId, powod: blad.message }));
+    await db.batch([
+      zdanieAck(db, job.id, teraz),
+      db.prepare(`UPDATE waitlist SET emailStatus = 'failed' WHERE id = ?1 AND reservationId = ?2`).bind(waitlistId, reservationId),
+      ...zdaniaOdrzucOferte(db, { waitlistId, nowyStatus: "missed", ttlMs, teraz, eventId: zapis.eventId }),
+    ]);
+  }
+  return GOTOWE;
+}
+
 function wykonaj(db: D1Database, u: UslugiOutboxu, zegar: Zegar, job: JobOutboxu, teraz: number): Promise<Wynik> {
   switch (job.task) {
     case TASK_ZWROT:
@@ -383,6 +466,10 @@ function wykonaj(db: D1Database, u: UslugiOutboxu, zegar: Zegar, job: JobOutboxu
       return oddajPunkty(db, u, zegar, job, teraz);
     case TASK_MAIL:
       return wyslijMail(db, u, job, teraz);
+    case TASK_KOLEJKA:
+      return sprawdzKolejke(db, job, teraz);
+    case TASK_MAIL_OFERTY:
+      return wyslijMailOferty(db, u, job, teraz);
     default:
       throw new BladTrwaly(`Nieznany task: ${job.task}`);
   }
@@ -435,13 +522,23 @@ export interface PodsumowanieOutboxu {
 export async function przetworzOutbox(
   db: D1Database,
   uslugi: UslugiOutboxu,
-  opcje: { zegar: Zegar; limit?: number },
+  opcje: {
+    zegar: Zegar;
+    limit?: number;
+    /** Te joby najpierw (jeśli są gotowe), potem zwykła kolejność: np. kroki sagi właśnie opłaconej rezerwacji. */
+    najpierw?: readonly string[];
+    /** Tylko joby z `najpierw`, bez reszty outboxu (dokończenie operacji jednego klienta w żądaniu). */
+    tylkoTe?: boolean;
+  },
 ): Promise<PodsumowanieOutboxu> {
   const podsumowanie: PodsumowanieOutboxu = { wyslane: 0, odlozone: 0, ponowione: 0, doDlq: 0 };
   const limit = opcje.limit ?? DOMYSLNY_LIMIT_JOBOW;
+  const najpierw = [...(opcje.najpierw ?? [])];
   for (let i = 0; i < limit; i++) {
     const teraz = opcje.zegar.teraz();
-    const job = await wezJob(db, teraz, teraz + NIEWIDOCZNY_W_TRAKCIE_MS);
+    let job: JobOutboxu | null = null;
+    while (!job && najpierw.length > 0) job = await wezJobPoId(db, najpierw.shift() as string, teraz, teraz + NIEWIDOCZNY_W_TRAKCIE_MS);
+    if (!job && !opcje.tylkoTe) job = await wezJob(db, teraz, teraz + NIEWIDOCZNY_W_TRAKCIE_MS);
     if (!job) break;
     try {
       const wynik = await wykonaj(db, uslugi, opcje.zegar, job, teraz);

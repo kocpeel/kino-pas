@@ -92,7 +92,7 @@ describe("FormularzRezerwacji: wysyłanie", () => {
     const u = await wypelnij("  Jan  ", " JAN@Example.com ");
     await u.click(screen.getByRole("button", { name: "Zarezerwuj fotel" }));
     expect(utworzRezerwacje).toHaveBeenCalledWith(
-      { eventId: "metropolis", seatId: "F7", name: "Jan", email: "jan@example.com" },
+      { eventId: "metropolis", seatId: "F7", customerName: "Jan", email: "jan@example.com" },
       expect.stringMatching(/^[0-9a-f-]{36}$/),
       expect.anything(),
     );

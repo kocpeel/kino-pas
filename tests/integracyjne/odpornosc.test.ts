@@ -86,6 +86,20 @@ describe("rate limiting", () => {
     expect((await wyslij("C1", "inny-adres@example.com", "8.8.8.8")).status).toBe(201);
   });
 
+  it("III.A3: zalew GET /api/loyalty z jednego IP: po limicie 429 z Retry-After, a inny adres czyta dalej", async () => {
+    const czytaj = (ip: string) =>
+      exports.default.fetch(new Request("https://kasa.test/api/loyalty?email=zalew%40example.com", { headers: { "cf-connecting-ip": ip } }));
+    const statusy: number[] = [];
+    for (let i = 0; i < 60; i++) statusy.push((await czytaj("7.7.7.7")).status);
+    expect(statusy.filter((s) => s !== 200)).toEqual([]);
+    const odmowa = await czytaj("7.7.7.7");
+    expect(odmowa.status).toBe(429);
+    const ponow = Number(odmowa.headers.get("retry-after"));
+    expect(ponow).toBeGreaterThanOrEqual(1);
+    expect(ponow).toBeLessThanOrEqual(60);
+    expect((await czytaj("8.8.4.4")).status).toBe(200);
+  });
+
   it("ścisły limiter: limit na e-mail działa niezależnie od IP", async () => {
     const statusy: number[] = [];
     for (let i = 1; i <= 4; i++) statusy.push((await wyslij(`D${i}`, "ten-sam@example.com", `10.9.0.${i}`)).status);

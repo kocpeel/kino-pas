@@ -16,15 +16,18 @@
   "observability": { "enabled": true },
 
   // Jeden Durable Object na seans: trzyma połączenia WebSocket oglądających mapę i rozsyła zmiany.
+  // LIMITER: ścisłe limity i budżet Voucherify. BUDZIK: jeden obiekt, który wykonuje joby outboxu w ich terminie.
   "durable_objects": {
     "bindings": [
       { "name": "SALE", "class_name": "SalaSeansu" },
-      { "name": "LIMITER", "class_name": "LimiterZadan" }
+      { "name": "LIMITER", "class_name": "LimiterZadan" },
+      { "name": "BUDZIK", "class_name": "BudzikOutboxu" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
-    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] },
+    { "tag": "v3", "new_sqlite_classes": ["BudzikOutboxu"] }
   ],
 
   "d1_databases": [
@@ -120,12 +123,14 @@
       "durable_objects": {
         "bindings": [
           { "name": "SALE", "class_name": "SalaSeansu" },
-          { "name": "LIMITER", "class_name": "LimiterZadan" }
+          { "name": "LIMITER", "class_name": "LimiterZadan" },
+          { "name": "BUDZIK", "class_name": "BudzikOutboxu" }
         ]
       },
       "migrations": [
         { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
-        { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+        { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] },
+        { "tag": "v3", "new_sqlite_classes": ["BudzikOutboxu"] }
       ],
       "d1_databases": [
         {

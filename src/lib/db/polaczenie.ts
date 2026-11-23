@@ -5,12 +5,20 @@
 import { zegarSystemowy, type Zegar } from "../czas";
 import { wczytajKonfiguracje, type Konfiguracja } from "../config";
 import type { SeansNaLiscie, SzczegolySeansu } from "../domain/typy";
+import type { BudzikOutboxu } from "../budzik/budzik-outboxu";
+import { bramkaResendZeSrodowiska } from "../maile/resend";
 import { bramkaZeSrodowiska } from "../platnosci/stripe";
 import { uslugaPunktowZeSrodowiska } from "../punkty/usluga";
 import { CacheZLimitem } from "../resilience/cache";
 import type { SalaSeansu } from "../push/sala-seansu";
 import { adresSaliDev, czyNextDev } from "../push/tryb-dev";
-import { lancuchLimiterow, limiterNaObiekcie, type Limiter, type Limitery } from "../resilience/limit-zapytan";
+import {
+  lancuchLimiterow,
+  limiterNaObiekcie,
+  OKNO_LIMITU_MINUTOWEGO_S,
+  type Limiter,
+  type Limitery,
+} from "../resilience/limit-zapytan";
 import type { LimiterZadan } from "../resilience/limiter-zadan";
 import { straznikDlaIzolatu } from "../resilience/przeciazenie";
 import type { CacheKrawedzi, CacheOdczytow, Zaleznosci } from "../zaleznosci";
@@ -30,6 +38,11 @@ export interface Bindingi {
   VOUCHERIFY_API_URL?: string;
   VOUCHERIFY_CAMPAIGN_ID?: string;
   RESEND_WEBHOOK_SECRET?: string;
+  RESEND_API_KEY?: string;
+  RESEND_FROM?: string;
+  /** Tylko testy: adres sztucznego Resend. */
+  RESEND_API_BASE?: string;
+  BUDZIK?: DurableObjectNamespace<BudzikOutboxu>;
   [zmienna: string]: unknown;
 }
 
@@ -88,6 +101,24 @@ function powiadamiaczSal(
   };
 }
 
+/** Jeden budzik outboxu na Workera (stała nazwa obiektu). Wywołanie w tle: awaria budzika niczego nie psuje. */
+function budzikOutboxu(
+  przestrzen: DurableObjectNamespace<BudzikOutboxu> | undefined,
+  wTle: ((obietnica: Promise<unknown>) => void) | undefined,
+): (() => void) | undefined {
+  if (!przestrzen) return undefined;
+  return () => {
+    try {
+      const praca = Promise.resolve(przestrzen.get(przestrzen.idFromName("outbox")).zaplanuj()).catch((blad: unknown) => {
+        console.warn("Budzik outboxu nie odpowiada (zrobi to Cron)", blad);
+      });
+      wTle?.(praca);
+    } catch (blad) {
+      console.warn("Budzik outboxu niedostępny", blad);
+    }
+  };
+}
+
 /** W `npm run dev` sala żyje w osobnym Workerze (workers/sala-dev): powiadamiamy go przez HTTP. */
 function powiadamiaczSaliDev(
   adres: string | null,
@@ -122,6 +153,9 @@ function limiteryRezerwacji(env: Bindingi, k: Konfiguracja): Limitery {
       env.RL_REZERWACJE_EMAIL,
       limiterNaObiekcie(obiekty, "rezerwacje", [{ limit: k.limitProbNaEmail, oknoS: okres }]),
     ),
+    saldo: limiterNaObiekcie(obiekty, "saldo", [{ limit: k.limitOdczytowSaldaNaIp, oknoS: OKNO_LIMITU_MINUTOWEGO_S }]),
+    zapisNaListe: limiterNaObiekcie(obiekty, "lista-zapis", [{ limit: k.limitZapisowNaListeNaIp, oknoS: OKNO_LIMITU_MINUTOWEGO_S }]),
+    odczytListy: limiterNaObiekcie(obiekty, "lista-odczyt", [{ limit: k.limitOdczytowListyNaIp, oknoS: OKNO_LIMITU_MINUTOWEGO_S }]),
   };
 }
 
@@ -149,5 +183,8 @@ export function zaleznosciZBindingow(env: Bindingi, opcje: OpcjeZaleznosci = {})
     // W `next dev` obiektu limitera nie ma (żyje w worker.ts), więc budżet liczy tylko Voucherify (429).
     punkty: uslugaPunktowZeSrodowiska(czyNextDev() ? { ...env, LIMITER: undefined } : env),
     sekretWebhookaResend: env.RESEND_WEBHOOK_SECRET,
+    maile: bramkaResendZeSrodowiska(env),
+    // W `next dev` klasy budzika nie ma (żyje w worker.ts): joby od razu robi samo żądanie w tle.
+    budzik: czyNextDev() ? undefined : budzikOutboxu(env.BUDZIK, opcje.wTle),
   };
 }

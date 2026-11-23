@@ -34,6 +34,7 @@ export const SEKRET_WEBHOOKA = "whsec_test_integracyjny";
 /** Każdy test zaczyna od czystych 3 seansów × 80 foteli. */
 export async function zasiej(db: D1Database = env.DB): Promise<void> {
   await db.batch([
+    db.prepare("DELETE FROM waitlist"),
     db.prepare("DELETE FROM seats"),
     db.prepare("DELETE FROM events"),
     db.prepare("DELETE FROM reservations"),
@@ -55,6 +56,7 @@ export interface OpcjeZaleznosci {
   sekretWebhooka?: string | undefined;
   punkty?: UslugaPunktow | undefined;
   sekretWebhookaResend?: string | undefined;
+  maile?: BramkaMaili | undefined;
 }
 
 export function zaleznosci(opcje: OpcjeZaleznosci = {}): Zaleznosci & { zegar: ZegarTestowy } {
@@ -75,6 +77,7 @@ export function zaleznosci(opcje: OpcjeZaleznosci = {}): Zaleznosci & { zegar: Z
     sekretWebhooka: "sekretWebhooka" in opcje ? opcje.sekretWebhooka : SEKRET_WEBHOOKA,
     punkty: opcje.punkty,
     sekretWebhookaResend: opcje.sekretWebhookaResend,
+    maile: opcje.maile,
   };
 }
 
@@ -351,7 +354,7 @@ export function zadanieRezerwacji(dane: DaneTestowe, opcje: { klucz?: string; ip
     body: JSON.stringify({
       eventId: dane.eventId ?? SEANS,
       seatId: dane.seatId,
-      name: dane.name ?? "Jan Testowy",
+      customerName: dane.name ?? "Jan Testowy",
       email: dane.email ?? "jan@example.com",
     }),
   });

@@ -25,6 +25,14 @@ export interface Konfiguracja {
   odczytowVoucherifyNaGodzine: number;
   /** Jak długo saldo punktów z pamięci podręcznej uchodzi za aktualne. */
   swiezoscSaldaMs: number;
+  /** Ile odczytów salda (GET /api/loyalty) na minutę z jednego IP; potem 429 z Retry-After. 0 wyłącza. */
+  limitOdczytowSaldaNaIp: number;
+  /** Ile zapisów na listę oczekujących na minutę z jednego IP. 0 wyłącza. */
+  limitZapisowNaListeNaIp: number;
+  /** Ile odczytów i wypisań z listy (GET/DELETE /api/waitlist/:id) na minutę z jednego IP. 0 wyłącza. */
+  limitOdczytowListyNaIp: number;
+  /** Tyle czekamy na odpowiedź limitera; potem przepuszczamy żądanie (fail-open, poprawność trzyma baza). */
+  timeoutLimiteraMs: number;
 }
 
 export class BladKonfiguracji extends Error {
@@ -49,6 +57,9 @@ function liczbaCalkowita(env: Zmienne, nazwa: string, domyslna: number, min: num
 
 export const DOMYSLNY_TTL_S = 15 * 60;
 
+/** Domyślnie 1 s na odpowiedź limitera: zawieszony obiekt nie może zawiesić rezerwacji. */
+export const TIMEOUT_LIMITERA_MS = 1000;
+
 export function wczytajKonfiguracje(env: Zmienne): Konfiguracja {
   return {
     // Górna granica: sesja Stripe'a żyje najwyżej 24 h, a liczymy ją od expiresAt + 31 min.
@@ -66,5 +77,9 @@ export function wczytajKonfiguracje(env: Zmienne): Konfiguracja {
     wywolanVoucherifyNaGodzine: liczbaCalkowita(env, "VOUCHERIFY_CALLS_PER_HOUR", 90, 1, 1_000_000),
     odczytowVoucherifyNaGodzine: liczbaCalkowita(env, "VOUCHERIFY_READS_PER_HOUR", 40, 0, 1_000_000),
     swiezoscSaldaMs: liczbaCalkowita(env, "LOYALTY_CACHE_SECONDS", 30, 0, 86_400) * 1000,
+    limitOdczytowSaldaNaIp: liczbaCalkowita(env, "LOYALTY_READS_PER_IP_PER_MINUTE", 60, 0, 100_000),
+    limitZapisowNaListeNaIp: liczbaCalkowita(env, "WAITLIST_JOINS_PER_IP_PER_MINUTE", 20, 0, 100_000),
+    limitOdczytowListyNaIp: liczbaCalkowita(env, "WAITLIST_READS_PER_IP_PER_MINUTE", 120, 0, 100_000),
+    timeoutLimiteraMs: liczbaCalkowita(env, "RATE_LIMITER_TIMEOUT_MS", TIMEOUT_LIMITERA_MS, 50, 30_000),
   };
 }

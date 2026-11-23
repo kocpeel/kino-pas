@@ -13,6 +13,9 @@ export type RodzajBledu =
   | "ZA_MALO_PUNKTOW"
   | "PUNKTY_ZABLOKOWANE"
   | "PUNKTY_NIEDOSTEPNE"
+  | "PUNKTY_ZAJETE"
+  | "NIE_WYPRZEDANE"
+  | "LISTA_ZAKONCZONA"
   | "KLUCZ_UZYTY"
   | "LIMIT_ZAPYTAN"
   | "LIMIT_REZERWACJI"
@@ -71,6 +74,21 @@ export const OPISY_BLEDOW: Record<RodzajBledu, OpisBledu> = {
     status: 503,
     kod: "points_unavailable",
     komunikat: "Punkty są chwilowo niedostępne. Możesz zapłacić bez punktów albo spróbować za chwilę.",
+  },
+  PUNKTY_ZAJETE: {
+    status: 409,
+    kod: "points_busy",
+    komunikat: "Trwa inna operacja na Twoich punktach (np. druga płatność). Spróbuj za chwilę.",
+  },
+  NIE_WYPRZEDANE: {
+    status: 409,
+    kod: "not_sold_out",
+    komunikat: "To wydarzenie nie jest wyprzedane: wybierz wolne miejsce i zarezerwuj je.",
+  },
+  LISTA_ZAKONCZONA: {
+    status: 409,
+    kod: "waitlist_done",
+    komunikat: "Masz już bilet z listy oczekujących, więc nie ma z czego się wypisać.",
   },
   KLUCZ_UZYTY: {
     status: 422,

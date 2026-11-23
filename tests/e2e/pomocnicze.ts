@@ -6,8 +6,10 @@ export interface Seans {
   hall: string;
 }
 
+/** Zwykłe seanse (sala 8 × 10). Wydarzenie testowe listy oczekujących `waitlist-test` (dwa miejsca) ma własne testy. */
 export async function seanse(request: APIRequestContext): Promise<Seans[]> {
-  return (await (await request.get("/api/events")).json()) as Seans[];
+  const wszystkie = (await (await request.get("/api/events")).json()) as Seans[];
+  return wszystkie.filter((s) => s.id !== "waitlist-test");
 }
 
 /** Losowy wolny fotel (testy nie zależą od stanu po poprzednich uruchomieniach). */

@@ -23,7 +23,7 @@ export interface DaneMailaBiletu {
   reservationId: string;
 }
 
-function ucieczka(tekst: string): string {
+export function ucieczka(tekst: string): string {
   return tekst.replace(/[&<>"']/g, (z) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[z] as string);
 }
 

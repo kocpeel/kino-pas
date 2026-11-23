@@ -276,6 +276,25 @@ describe("Licznik", () => {
     expect(utworzPlatnosc).toHaveBeenCalledWith(ID, expect.objectContaining({ punkty: 1000 }));
   });
 
+  it("punkty bez e-maila w tej przeglądarce (np. link z maila listy oczekujących): pole prosi o e-mail, potem saldo", async () => {
+    serwerTrzyma(120_000);
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.queryByLabelText("Użyj punktów")).not.toBeInTheDocument();
+    expect(pobierzSaldo).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Sprawdź punkty" }));
+    expect(screen.getByLabelText("Masz punkty? Podaj e-mail z rezerwacji")).toHaveAttribute("aria-invalid", "true");
+    expect(pobierzSaldo).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Masz punkty? Podaj e-mail z rezerwacji"), { target: { value: " Jan@Example.com " } });
+    fireEvent.click(screen.getByRole("button", { name: "Sprawdź punkty" }));
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(pobierzSaldo).toHaveBeenCalledWith("jan@example.com", expect.anything());
+    expect(screen.getByText(/Możesz wydać najwięcej 1000 pkt/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Użyj punktów")).toBeInTheDocument();
+  });
+
   it("punkty: wpisana liczba ponad możliwą jest przycinana (połowa ceny albo saldo)", async () => {
     pobierzSaldo.mockResolvedValue({ email: "jan@example.com", points: 5000 });
     zarezerwowano(120_000);

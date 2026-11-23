@@ -29,6 +29,11 @@ const SQL_SEANS = `SELECT id, movie, startsAt, hall, rowsCount, seatsPerRow, pri
 // Bez ORDER BY: sortowanie w SQL skłoniłoby planer do skanu klucza głównego (cała sala) zamiast indeksu.
 const SQL_ZAJETE = `SELECT seatId FROM seats WHERE eventId = ?2 AND ${WARUNEK_ZAJETY}`;
 
+/** Etap IV: wyprzedane, gdy każde miejsce jest kupione albo ma ważną rezerwację (`takenSeats` to dokładnie one). */
+export function czyWyprzedany(event: Pick<Seans, "rowsCount" | "seatsPerRow">, takenSeats: readonly string[]): boolean {
+  return takenSeats.length >= event.rowsCount * event.seatsPerRow;
+}
+
 export async function szczegolySeansu(db: D1Database, eventId: string, teraz: number): Promise<SzczegolySeansu | null> {
   // Jedna podróż do bazy zamiast dwóch.
   const [seans, zajete] = await db.batch<Seans | { seatId: string }>([
@@ -39,7 +44,7 @@ export async function szczegolySeansu(db: D1Database, eventId: string, teraz: nu
   if (!event) return null;
   // Stała kolejność, żeby ta sama sala dawała tę samą odpowiedź (i ten sam ETag).
   const takenSeats = ((zajete?.results ?? []) as { seatId: string }[]).map((w) => w.seatId).sort();
-  return { event, takenSeats };
+  return { event, takenSeats, soldOut: czyWyprzedany(event, takenSeats) };
 }
 
 const SQL_NAJBLIZSZE_WYGASNIECIE = `
@@ -63,7 +68,7 @@ export async function stanSali(db: D1Database, eventId: string, teraz: number): 
   if (!event) return null;
   const takenSeats = ((zajete?.results ?? []) as { seatId: string }[]).map((w) => w.seatId).sort();
   const kiedy = (wygasniecie?.results[0] as { kiedy: number | null } | undefined)?.kiedy ?? null;
-  return { dane: { event, takenSeats }, najblizszeWygasniecie: kiedy };
+  return { dane: { event, takenSeats, soldOut: czyWyprzedany(event, takenSeats) }, najblizszeWygasniecie: kiedy };
 }
 
 export async function pobierzSeans(db: D1Database, eventId: string): Promise<Seans | null> {

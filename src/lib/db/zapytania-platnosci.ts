@@ -4,6 +4,7 @@
 // (naliczenie punktów, mail) albo kompensacje (zwrot na kartę, oddanie punktów). Żadnego wywołania sieciowego w środku.
 
 import type { StatusMiejsca } from "../domain/typy";
+import { zdanieOfertaKupiona } from "./zapytania-listy";
 
 export interface WierszRezerwacji {
   id: string;
@@ -255,6 +256,8 @@ export async function zaksieguj(db: D1Database, k: Ksiegowanie): Promise<WynikKs
     }
     zdania.push(db.prepare(SQL_SAGA_PO_BILECIE).bind(k.reservationId, k.paymentIntentId, k.teraz));
     zdania.push(db.prepare(SQL_KROK_BILET).bind(k.reservationId, k.paymentIntentId, k.teraz));
+    // Etap IV: miejsce z listy oczekujących kupione, zapis na liście kończy się jako `done`.
+    zdania.push(zdanieOfertaKupiona(db, k.reservationId, k.teraz));
   }
   zdania.push(db.prepare(SQL_ODDAJ_PUNKTY).bind(k.reservationId, `${TASK_ODDANIE_PUNKTOW}:${k.reservationId}`, dane, k.teraz));
   zdania.push(db.prepare(SQL_STATUS_ODDANIA).bind(k.reservationId));
@@ -274,16 +277,25 @@ export async function zaksieguj(db: D1Database, k: Ksiegowanie): Promise<WynikKs
 export async function zapiszLosMaila(
   db: D1Database,
   p: { idZdarzenia: string; emailId: string; los: "delivered" | "bounced" | "failed"; teraz: number },
-): Promise<void> {
+  /** Dalsze skutki w tej samej transakcji, np. odpadnięcie oferty z listy oczekujących po odbitym mailu. */
+  dalej: D1PreparedStatement[] = [],
+): Promise<boolean> {
   try {
     await db.batch([
       db.prepare(`INSERT INTO inbox (id, processedAt) VALUES (?1, ?2)`).bind(p.idZdarzenia, p.teraz),
       db
         .prepare(`UPDATE reservations SET emailStatus = ?2 WHERE emailId = ?1 AND NOT (emailStatus = 'bounced' AND ?2 = 'delivered')`)
         .bind(p.emailId, p.los),
+      // Etap IV: mail z ofertą z listy oczekujących.
+      db
+        .prepare(`UPDATE waitlist SET emailStatus = ?2 WHERE emailId = ?1 AND NOT (emailStatus = 'bounced' AND ?2 = 'delivered')`)
+        .bind(p.emailId, p.los),
+      ...dalej,
     ]);
+    return true;
   } catch (blad) {
     if (!czyDuplikatZdarzenia(blad)) throw blad;
+    return false;
   }
 }
 

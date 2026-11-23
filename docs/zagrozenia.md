@@ -56,6 +56,31 @@ odmówić albo wykonać operację i nie zdążyć tego powiedzieć. Kroki z nimi
 | D32 | Voucherify obcina odjęcie do salda zamiast odmówić (sprawdzone na sandboksie) | Zapisane `pointsUsed` większe niż to, co zeszło: rabat bez pokrycia | Liczy się faktyczna zmiana z odpowiedzi (`points`); gdy zeszło mniej, korekta oddaje to, co zeszło, i 422; każda próba ma własny `source_id`; kompensacje liczą z historii wydanie minus korektę | `punkty.test.ts` (obcięte odjęcie), sandbox |
 | D31 | Klucze Voucherify i Resend | Wyciek z repozytorium albo z przeglądarki | Tylko sekrety Workerów; `npm run lint:sekrety` szuka wzorców i dokładnych wartości z lokalnych plików env | CI |
 
+| D33 | Zalew odczytów salda z jednego adresu (np. 200 na minutę) | Wyczerpany budżet Voucherify i wolniejsze odpowiedzi dla innych | Limit 60 odczytów na minutę na IP (ścisły limiter na Durable Objekcie): 429 z `Retry-After`; klient z innej sieci czyta i płaci punktami dalej, a checkout ma osobną część budżetu | `odpornosc.test.ts` (III.A3) |
+| D34 | Punkty za zakup albo zwrot punktów dopiero z Cronem | Saldo po zakupie albo po porzuconej płatności nieaktualne przez minutę | Webhook płatności od razu rusza kroki sagi (budzik albo praca w tle), budzik wykonuje strażnika w chwili `expiresAt`, a `GET /api/loyalty` sam dokańcza zaległe operacje klienta | `punkty.test.ts` (III.B3), `lista.test.ts`, `budzik.test.ts` |
+
+## Etap IV: lista oczekujących i Resend
+
+Lista oczekujących przekazuje zwolnione miejsce pierwszej osobie z kolejki jako zwykłą rezerwację i wysyła jej mail
+przez Resend. Resend to cudza usługa: mail może nie dojść, dojść z opóźnieniem albo wrócić jako odbity, a webhook
+o tym może nie przyjść albo przyjść podrobiony. Szczegóły w
+[kontrakt-wewnetrzny.md](kontrakt-wewnetrzny.md#etap-iv-lista-oczekujących).
+
+| Nr | Zagrożenie | Skutek bez ochrony | Karta (strażnik) | Test |
+|---|---|---|---|---|
+| D35 | Mail z ofertą nie dochodzi (odbity, adres spoza sandboksa Resend) | Miejsce czeka na kogoś, kto o nim nie wie, a sala stoi pusta | Webhook `email.bounced`/`email.failed` i trwała odmowa przy wysyłce: oferta `missed`, miejsce od razu dla następnej osoby, w jednej transakcji z inboxem | `lista.test.ts` |
+| D36 | Webhook Resend nie przychodzi albo się spóźnia | Odbity mail niezauważony | Oferta i tak trwa tylko TTL rezerwacji (15 min, w trybie testowym 2), potem `missed` i następna osoba | `lista.test.ts` |
+| D37 | Podrobiony webhook Resend („bounced” dla cudzej oferty) | Ktoś wyrzuca innych z kolejki | Podpis Svix na surowym ciele, tolerancja 5 min, inbox na `svix-id` | `punkty.test.ts`, `lista.test.ts` |
+| D38 | Mail z ofertą wysłany dwa razy (ponowiony job) | Dwa maile, zamieszanie | `Idempotency-Key: oferta/<rezerwacja>`; oferta, która się skończyła, nie dostaje maila | `lista.test.ts` |
+| D39 | Cron za rzadko (darmowy Vercel: raz na dobę; Cloudflare: co minutę) | Oferta i mail spóźnione o minuty, punkty wracają po czasie | Budzik outboxu (Durable Object z alarmem na najbliższy job), praca w tle żądania, a do tego kolejka przesuwana leniwie przy każdym odczycie; Cron to tylko siatka | `lista.test.ts`, `budzik.test.ts` (alarm w workerd) |
+| D40 | Równoległe przesunięcia kolejki | Jedno miejsce dla dwóch osób albo dwa miejsca dla jednej | Oferta = warunkowy zapis fotela (wolny albo wygasły) z warunkiem, że osoba nadal czeka, w jednej transakcji z rezerwacją, statusem i mailem | `lista.test.ts` (równoległe odczyty) |
+| D41 | Przypadkowy klient zabiera zwolnione miejsce, zanim dostanie je kolejka | Lista oczekujących nie działa w praktyce | Każda rezerwacja i każdy odczyt sali najpierw przesuwa kolejkę, gdy ktoś czeka | `lista.test.ts` (pierwszeństwo) |
+| D42 | Podwójne „Powiadom mnie”, dwa równoległe zapisy | Ta sama osoba dwa razy w kolejce | Indeks unikalny na aktywny zapis (wydarzenie, e-mail): drugi zapis oddaje pierwszy | `lista.test.ts` |
+| D43 | Zalew zapisów i odczytów listy z jednego adresu | Zapchana kolejka, obciążona baza | Limity na IP: 20 zapisów i 120 odczytów na minutę, potem 429 z `Retry-After` | konfiguracja, przegląd kodu |
+| D44 | Cudze wypisanie albo podgląd cudzego zapisu | Ktoś wypisuje innych | `waitlistId` to losowy UUID v4 (122 bity), znany tylko zapisanemu i z jego maila; ten sam kompromis co przy `reservationId` | przegląd kodu |
+| D45 | Osoba z ofertą wydała punkty, a potem oferta odpadła (wypisanie, odbity mail) | Punkty przepadają | Rezerwacja wygasa od razu, a strażnik jej sesji dostaje termin „teraz”: wygasza sesję i oddaje punkty | `lista.test.ts`, `punkty.test.ts` |
+| D46 | Płatność za ofertę dociera po jej końcu | Dwie osoby z tym samym miejscem | Zasady etapu II: bilet tylko, gdy płatność przed `expiresAt` i fotel nadal tej rezerwacji; inaczej zwrot pieniędzy i punktów | `platnosci.test.ts`, `punkty.test.ts` |
+
 ## Czego ta lista nie obejmuje
 
 - **Spory i chargebacki:** w trybie testowym ich nie ma.

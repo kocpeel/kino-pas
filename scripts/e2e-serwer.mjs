@@ -22,7 +22,7 @@ writeFileSync(
 );
 
 wrangler("d1 migrations apply DB --local --env e2e");
-wrangler('d1 execute DB --local --env e2e --command "DELETE FROM seats; DELETE FROM events; DELETE FROM reservations; DELETE FROM inbox; DELETE FROM outbox; DELETE FROM sagas; DELETE FROM loyalty_accounts;"');
+wrangler('d1 execute DB --local --env e2e --command "DELETE FROM waitlist; DELETE FROM seats; DELETE FROM events; DELETE FROM reservations; DELETE FROM inbox; DELETE FROM outbox; DELETE FROM sagas; DELETE FROM loyalty_accounts;"');
 wrangler("d1 execute DB --local --env e2e --file seed/seed.sql");
 
 const stripe = spawn("node tests/e2e/sztuczny-stripe.mjs", {

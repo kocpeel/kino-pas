@@ -8,9 +8,14 @@ import {
   obsluzListeSeansow,
   obsluzOdczytRezerwacji,
   obsluzRezerwacje,
+  obsluzSaldo,
+  obsluzStanZapisu,
   obsluzSzczegolySeansu,
+  obsluzWebhookResend,
   obsluzWebhookStripe,
+  obsluzWypisanie,
   obsluzZakup,
+  obsluzZapisNaListe,
   obsluzZdrowie,
 } from "../../src/lib/http/trasy";
 import { polaczZSala } from "../../src/lib/push/polaczenie-na-zywo";
@@ -18,6 +23,7 @@ import { WZOR_SCIEZKI_NA_ZYWO } from "../../src/lib/push/protokol";
 
 export { SalaSeansu } from "../../src/lib/push/sala-seansu";
 export { LimiterZadan } from "../../src/lib/resilience/limiter-zadan";
+export { BudzikOutboxu } from "../../src/lib/budzik/budzik-outboxu";
 
 export default {
   async fetch(zadanie, env, ctx) {
@@ -44,6 +50,16 @@ export default {
       return obsluzOdczytRezerwacji(zadanie, dostawca, decodeURIComponent(m[1] as string));
     }
     if (metoda === "POST" && pathname === "/api/webhooks/stripe") return obsluzWebhookStripe(zadanie, dostawca);
+    if (metoda === "POST" && pathname === "/api/webhooks/resend") return obsluzWebhookResend(zadanie, dostawca);
+    if (metoda === "GET" && pathname === "/api/loyalty") return obsluzSaldo(zadanie, dostawca);
+    if (metoda === "POST" && (m = pathname.match(/^\/api\/events\/([^/]+)\/waitlist$/))) {
+      return obsluzZapisNaListe(zadanie, dostawca, decodeURIComponent(m[1] as string));
+    }
+    if ((m = pathname.match(/^\/api\/waitlist\/([^/]+)$/))) {
+      const id = decodeURIComponent(m[1] as string);
+      if (metoda === "GET") return obsluzStanZapisu(zadanie, dostawca, id);
+      if (metoda === "DELETE") return obsluzWypisanie(zadanie, dostawca, id);
+    }
     return new Response("Not found", { status: 404 });
   },
 } satisfies ExportedHandler<Cloudflare.Env>;

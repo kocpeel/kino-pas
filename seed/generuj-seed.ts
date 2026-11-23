@@ -1,15 +1,27 @@
-// Generuje seed: 3 seanse w 2 salach, każdy z kompletem 8 × 10 foteli.
+// Generuje seed: 3 seanse w 2 salach, każdy z kompletem 8 × 10 foteli, i wydarzenie testowe listy oczekujących
+// `waitlist-test` z dokładnie dwoma miejscami (kontrakt etapu IV; na produkcję wstawia je migracja 0007).
 // Użycie: `npm run seed:generuj` (zapisuje seed/seed.sql). Testy integracyjne
 // importują `zbudujSeed()` bezpośrednio, więc obie drogi dają te same dane.
 
-import { DOMYSLNY_UKLAD, wszystkieMiejsca } from "../src/lib/domain/uklad-sali.ts";
+import { DOMYSLNY_UKLAD, wszystkieMiejsca, type UkladSali } from "../src/lib/domain/uklad-sali.ts";
 
 export interface SeansSeedu {
   id: string;
   movie: string;
   startsAt: string;
   hall: string;
+  /** Układ sali; domyślnie 8 × 10. */
+  uklad?: UkladSali;
 }
+
+/** Wydarzenie testowe listy oczekujących: dwa miejsca, łatwo wyprzedać (kontrakt etapu IV). */
+export const WYDARZENIE_LISTY: SeansSeedu = {
+  id: "waitlist-test",
+  movie: "Lista oczekujących: seans testowy",
+  startsAt: "2026-12-31T18:00:00.000Z",
+  hall: "Sala kameralna",
+  uklad: { rzedy: 1, miejscaWRzedzie: 2 },
+};
 
 /** Cena fotela na seans w groszach (3200 = 32 zł). */
 export const CENA_FOTELA = 3200;
@@ -23,6 +35,7 @@ export const SEANSE: readonly SeansSeedu[] = [
     startsAt: "2026-11-08T17:15:00.000Z",
     hall: "Sala 1",
   },
+  WYDARZENIE_LISTY,
 ];
 
 function tekstSql(wartosc: string): string {
@@ -32,14 +45,15 @@ function tekstSql(wartosc: string): string {
 /** Lista instrukcji SQL (bez średników), w kolejności wykonania. */
 export function zbudujSeed(): string[] {
   const instrukcje: string[] = [];
-  const { rzedy, miejscaWRzedzie } = DOMYSLNY_UKLAD;
   for (const seans of SEANSE) {
+    const uklad = seans.uklad ?? DOMYSLNY_UKLAD;
+    const { rzedy, miejscaWRzedzie } = uklad;
     instrukcje.push(
       `INSERT INTO events (id, movie, startsAt, hall, rowsCount, seatsPerRow, price) VALUES (` +
         `${tekstSql(seans.id)}, ${tekstSql(seans.movie)}, ${tekstSql(seans.startsAt)}, ${tekstSql(seans.hall)}, ` +
         `${rzedy}, ${miejscaWRzedzie}, ${CENA_FOTELA})`,
     );
-    const wiersze = wszystkieMiejsca(DOMYSLNY_UKLAD).map((seatId) => `(${tekstSql(seans.id)}, ${tekstSql(seatId)})`);
+    const wiersze = wszystkieMiejsca(uklad).map((seatId) => `(${tekstSql(seans.id)}, ${tekstSql(seatId)})`);
     instrukcje.push(`INSERT INTO seats (eventId, seatId) VALUES ${wiersze.join(", ")}`);
   }
   return instrukcje;

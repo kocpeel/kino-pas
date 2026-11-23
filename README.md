@@ -140,6 +140,17 @@ działa dalej, a punkty i maile czekają (503 albo job w outboksie).
 
    Bez własnej domeny Resend dostarcza tylko na adres właściciela konta i na adresy testowe, np. `delivered+jan@resend.dev`.
 
+Etap IV: lista oczekujących (`POST /api/events/:id/waitlist`, `GET`/`DELETE /api/waitlist/:id`, `soldOut` w szczegółach
+wydarzenia, wydarzenie testowe `waitlist-test` z dwoma miejscami z migracji 0007). Mail z ofertą wychodzi od razu, więc
+`RESEND_API_KEY` jest teraz także w głównym Workerze:
+
+```bash
+node scripts/cloudflare.mjs wrangler secret put RESEND_API_KEY
+```
+
+Joby outboxu w terminie (zwrot punktów po `expiresAt`, przesunięcie kolejki, mail z ofertą) wykonuje Durable Object
+`BudzikOutboxu` (binding `BUDZIK`, migracja Durable Objectów `v3` w `wrangler.jsonc`); Cron co minutę zostaje siatką.
+
 Tryb oceny etapu (`wrangler.jsonc`): TTL `"120"` (expiresAt ok. 2 min) i limit tylko zalewu z jednego IP (50 prób / 10 s),
 bez limitów na e-mail (`docs/decyzje.md`, sekcja 12). Po ocenie: TTL `"900"` i limity docelowe z komentarzy w
 `wrangler.jsonc`, potem ponowne wdrożenie.

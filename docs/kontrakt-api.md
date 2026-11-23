@@ -1,4 +1,4 @@
-# Kontrakt API (etapy I–III)
+# Kontrakt API (etapy I–IV)
 
 Wszystkie odpowiedzi to JSON (`application/json; charset=utf-8`). Czasy w `expiresAt` to epoch ms (UTC) z zegara serwera.
 Kwoty (`price`, `amount`) to grosze, waluta PLN: 3200 to 32 zł. Konwencja: 2xx sukces, 4xx odmowa z komunikatem, 5xx błąd serwera.
@@ -18,12 +18,15 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
 | Metoda | Ścieżka | Sukces | Błędy |
 |---|---|---|---|
 | GET | `/api/events` | 200 `SeansNaLiscie[]`, 304 | 503 |
-| GET | `/api/events/:id` | 200 `{ event, takenSeats }`, 304 | 404, 503 |
+| GET | `/api/events/:id` | 200 `{ event, takenSeats, soldOut }`, 304 | 404, 503 |
 | POST | `/api/reservations` | 201 `{ reservationId, expiresAt, amount }` | 400, 404, 409, 413, 422, 429, 503 |
 | GET | `/api/reservations/:id` | 200 `{ status, amount, expiresAt, pointsUsed, code?, pointsEarned? }` | 400, 404, 503 |
 | POST | `/api/reservations/:id/checkout` | 200 `{ url }`; ciało opcjonalne `{ points }` | 400, 404, 409, 410, 422, 503 |
+| POST | `/api/events/:id/waitlist` (etap IV) | 201 `{ waitlistId, position }`, 200 ten sam zapis | 400, 404, 409, 413, 429, 503 |
+| GET | `/api/waitlist/:id` (etap IV) | 200 `{ status, position, reservationId?, offerExpiresAt? }` | 400, 404, 429, 503 |
+| DELETE | `/api/waitlist/:id` (etap IV) | 200 `{ status: "left", position: 0 }` | 400, 404, 409, 429, 503 |
 | POST | `/api/webhooks/stripe` | 200 `{ received: true }` | 400, 413, 503 |
-| GET | `/api/loyalty?email=…` (etap III) | 200 `{ email, points }` | 400, 503 |
+| GET | `/api/loyalty?email=…` (etap III) | 200 `{ email, points }` | 400, 429, 503 |
 | POST | `/api/webhooks/resend` (etap III) | 200 `{ received: true }` | 400, 413, 503 |
 | POST | `/api/reservations/:id/purchase` | 200 `{ code }` opłaconej rezerwacji | 400, 402, 410, 503 |
 | GET | `/api/zdrowie` (poza kontraktem, do monitoringu) | 200 `{ status: "ok" \| "degraded", db: { latencyMs, avgLatencyMs }, loadShedding: { capacity }, payments: { configured } }` | 503 |
@@ -58,12 +61,18 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
 {
   "event": { "id": "metropolis-2026-11-06", "movie": "Metropolis", "startsAt": "2026-11-06T18:30:00.000Z",
              "hall": "Sala 1", "rowsCount": 8, "seatsPerRow": 10, "price": 3200 },
-  "takenSeats": ["F7", "D5"]
+  "takenSeats": ["F7", "D5"],
+  "soldOut": false
 }
 ```
 
 - `takenSeats` to wyłącznie identyfikatory foteli, posortowane (ten sam stan = ten sam ETag). Nigdy imiona ani e-maile.
 - „Zajęty" = `purchased` albo `reserved` z `expiresAt > teraz`.
+- `soldOut` (etap IV): `true`, gdy każde miejsce jest kupione albo ma ważną rezerwację (`takenSeats` obejmuje całą salę).
+  Wtedy można zapisać się na listę oczekujących.
+- Etap IV: `GET /api/events` zawiera wydarzenie testowe `waitlist-test` z dokładnie dwoma miejscami (`rowsCount: 1`,
+  `seatsPerRow: 2`, fotele `A1` i `A2`). Gdy na sali ktoś czeka na liście, odczyt najpierw przesuwa kolejkę: zwolnione
+  miejsce od razu dostaje pierwsza osoba z kolejki, więc w `takenSeats` jest już jako jej rezerwacja.
 - Cache: `public, max-age=1`. Nieaktualna mapa nie szkodzi: ostatnie słowo ma warunkowy zapis (409).
 
 ### POST /api/reservations
@@ -71,11 +80,15 @@ Oba GET-y mają słaby `ETag`. Klient, który wyśle `If-None-Match` z aktualnym
 Nagłówki: `Content-Type: application/json` (wymagany), `Idempotency-Key` (zalecany; 8–128 znaków `[A-Za-z0-9_.:-]`).
 
 ```json
-{ "eventId": "metropolis-2026-11-06", "seatId": "F7", "name": "Jan", "email": "jan@example.com" }
+{ "eventId": "metropolis-2026-11-06", "seatId": "F7", "customerName": "Jan", "email": "jan@example.com" }
 ```
 
 - `seatId` to tekst „F7" walidowany względem układu sali A–H × 1–10 (wielkie litery; `f7` → 400).
-- `name`: 2–80 znaków po scaleniu białych znaków. `email`: normalizowany do małych liter, bez spacji dookoła.
+- `customerName`: 2–80 znaków po scaleniu białych znaków. Dawna nazwa pola `name` działa dalej, gdy `customerName`
+  nie ma w ciele; błąd walidacji wskazuje to pole, które przysłał klient. `email`: normalizowany do małych liter,
+  bez spacji dookoła.
+- Etap IV: gdy na sali ktoś czeka na liście oczekujących, zwolnione miejsce należy najpierw do kolejki, więc zwykła
+  rezerwacja tego miejsca dostaje 409 `seat_taken`.
 - Limit ciała: 4 KiB (413).
 - `amount` to cena z chwili rezerwacji. Późniejsza zmiana `price` jej nie rusza, a płatność idzie zawsze na tę kwotę.
 
@@ -145,12 +158,15 @@ Liczbę punktów ustala pierwszy udany checkout.
 | 409 | `reservation_already_paid` | Rezerwacja jest już opłacona. |
 | 409 | `points_locked` | Płatność jest już przygotowana z inną liczbą punktów. Bez `points` albo z tą samą liczbą: ta sama sesja. |
 | 410 | `reservation_expired` | Rezerwacja wygasła. |
-| 422 | `not_enough_points` | Klient ma za mało punktów (`details.points` mówi, ile ma). Nic nie zeszło. |
+| 409 | `points_busy` | W tej samej chwili trwa inna operacja na punktach klienta (np. druga karta przeglądarki płaci punktami), a nie skończyła się w ciągu 8 s. Nic nie zeszło. Ma `Retry-After`. |
+| 422 | `not_enough_points` | Klient ma za mało punktów (`details.points` mówi, ile ma). Nic nie zeszło (także gdy Voucherify zdjął mniej, bo saldo w pamięci było starsze: korekta oddaje to, co zeszło). |
 | 503 | `payments_unavailable` | Stripe nie odpowiada albo płatności nie są skonfigurowane. Rezerwacja dalej trzyma fotel, a ponowienie jest bezpieczne. Ma `Retry-After`. |
-| 503 | `points_unavailable` | Voucherify nie odpowiada, budżet wywołań wyczerpany albo trwa inna operacja na punktach klienta. Ponowienie jest bezpieczne, a płatność bez punktów działa. Ma `Retry-After`. |
+| 503 | `points_unavailable` | Voucherify nie odpowiada albo budżet wywołań jest wyczerpany. Ponowienie jest bezpieczne, a płatność bez punktów działa. Ma `Retry-After`. |
 
 Sesja żyje co najmniej 30 minut, czyli dłużej niż rezerwacja. Po wygaśnięciu rezerwacji sesję wygasza strażnik
-(najpóźniej około minuty), a płatność, która mimo to zdąży, wraca do klienta i nie daje biletu.
+(budzik outboxu w chwili `expiresAt`, a najpóźniej Cron po około minucie), a płatność, która mimo to zdąży, wraca
+do klienta i nie daje biletu. Wydane punkty wracają w tej samej chwili; `GET /api/loyalty` tego klienta sam dokańcza
+zwrot, jeśli jeszcze go nie było, więc saldo sprzed zakupu widać zaraz po `expiresAt`.
 
 ### POST /api/webhooks/stripe
 
@@ -174,6 +190,10 @@ Saldo punktów klienta. Identyfikatorem konta jest e-mail (normalizowany do mał
 
 - E-mail, który jeszcze nic nie kupił (nie ma karty w Voucherify), ma 1000 punktów (punkty powitalne). Kartę
   zakładamy przy pierwszym użyciu punktów albo przy pierwszym naliczeniu, nie przy odczycie salda.
+- Limit: 60 odczytów na minutę z jednego IP (`LOYALTY_READS_PER_IP_PER_MINUTE`), potem 429 `rate_limited`
+  z `Retry-After`; klient z innej sieci czyta i płaci punktami dalej.
+- Przed odczytem kończą się zaległe operacje na punktach tego klienta (zwrot po porzuconej płatności, naliczenie
+  po zakupie), więc saldo jest już po nich.
 - Źródłem prawdy jest Voucherify, także dla e-maila, którego jeszcze nie znamy: kartę mogła mu założyć aplikacja albo
   kasa, i wtedy podajemy jej saldo. Saldo z ostatnich 30 s podajemy z pamięci podręcznej (sandbox Voucherify przyjmuje
   100 wywołań na godzinę). Gdy Voucherify albo budżet wywołań odmówi: ostatnie znane saldo z nagłówkami
@@ -184,8 +204,46 @@ Saldo punktów klienta. Identyfikatorem konta jest e-mail (normalizowany do mał
 ### POST /api/webhooks/resend (etap III)
 
 Los wysłanego maila od Resend. Wymaga podpisu Svix (`svix-id`, `svix-timestamp`, `svix-signature`, tolerancja 5 min).
-Obsługiwane: `email.delivered`, `email.bounced`, `email.failed` (zmieniają `emailStatus` rezerwacji). 200 także dla
-duplikatu i innych typów, 400 `invalid_signature` przy złym podpisie, 503 bez sekretu webhooka.
+Obsługiwane: `email.delivered`, `email.bounced`, `email.failed` (zmieniają `emailStatus` rezerwacji albo oferty z listy
+oczekujących). Odbity albo nieudany mail z ofertą (etap IV) kończy ofertę jako `missed` i od razu przesuwa kolejkę.
+200 także dla duplikatu i innych typów, 400 `invalid_signature` przy złym podpisie, 503 bez sekretu webhooka.
+
+### POST /api/events/:id/waitlist (etap IV)
+
+Zapis na listę oczekujących wyprzedanego wydarzenia. Nagłówek `Content-Type: application/json`.
+
+```json
+{ "email": "jan@example.com", "customerName": "Jan" }
+```
+
+| Kod | `error` | Kiedy |
+|---|---|---|
+| 201 | – | `{ waitlistId, position }`: nowy zapis; `position` liczy się od 1. |
+| 200 | – | Ten e-mail już czeka na to wydarzenie (albo ma ofertę): ten sam zapis i jego aktualna pozycja, nagłówek `Idempotent-Replayed: true`. |
+| 400 | `invalid_input` | Zły JSON albo pola (`details.email`, `details.customerName`). |
+| 404 | `not_found` | Nie ma takiego wydarzenia. |
+| 409 | `not_sold_out` | Wydarzenie nie jest wyprzedane: jest wolne miejsce do zwykłej rezerwacji. |
+| 429 | `rate_limited` | Za dużo zapisów z jednego IP (20 na minutę). |
+
+### GET /api/waitlist/:id (etap IV)
+
+```json
+{ "status": "offered", "position": 0, "reservationId": "…", "offerExpiresAt": 1794942560366, "seatId": "A1" }
+```
+
+- `status`: `waiting` (czeka w kolejce), `offered` (ma zarezerwowane miejsce), `done` (kupił bilet), `missed` (nie
+  zapłacił na czas albo mail z ofertą do niego nie doszedł), `left` (wypisał się).
+- `position`: miejsce w kolejce od 1 dla `waiting`; 0, gdy osoba już nie czeka.
+- `reservationId` i `offerExpiresAt` od oferty: miejsce to zwykła rezerwacja z etapu I (`GET /api/reservations/:id`,
+  checkout z punktami albo bez), a `offerExpiresAt` to jej `expiresAt`. `seatId` jest dodatkiem (link i opis w panelu).
+- Odczyt najpierw przesuwa kolejkę (leniwie, jak wygasanie rezerwacji), więc status jest aktualny co do sekundy.
+- 400 przy złym identyfikatorze, 404 bez zapisu, 429 powyżej 120 odczytów na minutę z jednego IP.
+
+### DELETE /api/waitlist/:id (etap IV)
+
+Wypisanie z listy w każdej chwili: 200 `{ "status": "left", "position": 0 }`. Osoba z ofertą oddaje miejsce, które
+od razu dostaje następna osoba z kolejki (wydane na nie punkty wracają). Drugie wypisanie, a także wypisanie po
+`missed`, to 200 bez zmian. Po zakupie (`done`) 409 `waitlist_done`. 400 przy złym identyfikatorze, 404 bez zapisu.
 
 ### POST /api/reservations/:id/purchase
 

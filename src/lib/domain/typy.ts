@@ -23,6 +23,28 @@ export interface SeansNaLiscie extends Seans {
 export interface SzczegolySeansu {
   event: Seans;
   takenSeats: string[];
+  /** Etap IV: każde miejsce jest kupione albo ma ważną rezerwację (wtedy można zapisać się na listę oczekujących). */
+  soldOut: boolean;
+}
+
+/** Odpowiedź POST /api/events/:id/waitlist. */
+export interface ZapisNaListe {
+  waitlistId: string;
+  /** Miejsce w kolejce, od 1. */
+  position: number;
+}
+
+/** Odpowiedź GET /api/waitlist/:id. */
+export interface StanZapisuNaListe {
+  status: "waiting" | "offered" | "done" | "missed" | "left";
+  /** Miejsce w kolejce (od 1) dla `waiting`; 0, gdy osoba już nie czeka. */
+  position: number;
+  /** Rezerwacja z oferty (od `offered`): zwykła rezerwacja z etapu I. */
+  reservationId?: string;
+  /** Do kiedy miejsce czeka (= expiresAt rezerwacji z oferty). */
+  offerExpiresAt?: number;
+  /** Fotel z oferty (poza kontraktem: link do płatności i opis w panelu). */
+  seatId?: string;
 }
 
 /** Odpowiedź POST /api/reservations. */

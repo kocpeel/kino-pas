@@ -59,12 +59,23 @@ Nie wysyłamy `customer_email`: Stripe sam go zbiera, a my nie przekazujemy wię
 ## 📤 Outbox
 
 Tabela `outbox`, te same pola co jobs z E06: `id`, `task`, `input`, `visibleAt`, `totalTried`, `completedAt`, `hasError`
-(plus `lastError`). Zapis razem z naszymi danymi, wysyłka w Workerze z Cronem (`domain/outbox.ts`): claim → wywołanie
-→ ack. Gwarancja: co najmniej raz.
+(plus `lastError`). Zapis razem z naszymi danymi, wysyłka w `domain/outbox.ts`: claim → wywołanie → ack. Gwarancja:
+co najmniej raz.
+
+Kto wykonuje joby (od etapu III/IV; ten sam claim, więc job nie wykona się dwa razy):
+
+| Kto | Kiedy |
+|---|---|
+| 🔔 Budzik outboxu (Durable Object `BudzikOutboxu`, binding `BUDZIK`) | W terminie co do sekundy: alarm nastawiony na `visibleAt` najbliższego joba. Budzi go każde miejsce, które dopisuje albo przesuwa job. |
+| Żądanie, które wywołało zdarzenie | Od razu w tle (`ruszOutbox`): webhook płatności → naliczenie punktów i mail; bez budzika (`next dev`, e2e) to jedyna droga poza odczytami. |
+| Odczyt klienta | Leniwie, przed odpowiedzią (`dokonczTeraz`): `GET /api/loyalty` kończy zaległe operacje na punktach tego klienta, odczyty listy oczekujących przesuwają kolejkę. |
+| ⏰ Cron co minutę | Siatka bezpieczeństwa: wszystko, czego nikt inny nie zrobił. |
 
 | `task` | `id` (i klucz idempotencji) | `input` | Co robi |
 |---|---|---|---|
 | `stripe-refund` | `stripe-refund:<paymentIntentId>` | `paymentIntentId`, `reservationId` | Zwrot płatności, która nie dała biletu. Zapisywany w tej samej transakcji co zdarzenie w inboxie. |
+| `lista-kolejka` | `lista-kolejka:<eventId>` | `eventId`, `ttlMs` | Etap IV, karta B: przesuwa kolejkę listy oczekujących (oferty dla czekających, `missed` po końcu oferty). Termin: najbliższe wygaśnięcie rezerwacji na sali, gdy ktoś czeka; po odbitym mailu albo wypisaniu od razu. Gdy ktoś nadal czeka, odkłada się na następne wygaśnięcie. |
+| `mail-oferta` | `mail-oferta:<reservationId>` (klucz Resend `oferta/<reservationId>`) | `waitlistId`, `reservationId`, `ttlMs` | Etap IV, karta C: mail z ofertą (wydarzenie, miejsce, link do zapłaty, godzina końca). Zapisywany w transakcji z ofertą. Trwała odmowa Resend = oferta odpada (`missed`) i kolejka rusza od razu. |
 | `stripe-session-watch` | `stripe-session-watch:<reservationId>` | `reservationId`, `sessionId` | Strażnik sesji. Co minutę, dopóki rezerwacja żyje: sesja opłacona, a webhook nie dotarł → rozlicza. Rezerwacja wygasła, a sesja otwarta → wygasza sesję. Rezerwacja opłacona → koniec, bez pytania Stripe'a. |
 
 Awaria: backoff 1, 2, 4… min, najwyżej godzina. Po 8 próbach (około 3 godziny) job idzie do DLQ (`hasError = 1`),
@@ -99,6 +110,9 @@ dobę, po 7 dniach (Stripe ponawia do 3 dni, a D1 nie ma indeksów TTL).
 | `STRIPE_SECRET_KEY` | sekret głównego Workera i Workera z Cronem, lokalnie `.dev.vars` | Tylko `sk_test_` albo `rk_test_`. Klucz produkcyjny wyłącza płatności. |
 | `STRIPE_WEBHOOK_SECRET` | sekret głównego Workera, lokalnie `.dev.vars` | Z endpointu w panelu Stripe albo z `stripe listen`. |
 | `ALERT_WEBHOOK_URL` | sekret Workera z Cronem, opcjonalny | Bez niego alerty są tylko w Workers Logs. |
+| `VOUCHERIFY_*` | sekrety głównego Workera i Workera z Cronem, lokalnie `.dev.vars` | Projekt Sandbox; kampania z `npm run voucherify:kampania`. |
+| `RESEND_API_KEY` | sekret głównego Workera (od etapu IV: mail z ofertą wychodzi od razu) i Workera z Cronem | Klucz z prawem do wysyłki wystarczy. |
+| `RESEND_WEBHOOK_SECRET` | sekret głównego Workera | Z webhooka w panelu Resend (`whsec_…`). |
 
 Jedno konto Stripe mogą dzielić środowiska (produkcja, staging, lokalnie) i każdy endpoint dostaje wszystkie zdarzenia.
 Dlatego zdarzenie z nieznaną rezerwacją kończy się 200 bez skutku, a przede wszystkim bez zwrotu.
@@ -171,5 +185,63 @@ powitalne 1000) z `X-Data-Stale`, a job czeka do zwolnienia miejsca bez liczenia
 
 ### Stan pośredni na stronie biletu
 
-Bilet jest od razu, a kroki 4 i 5 wykonuje Cron w ciągu minuty. Strona mówi to wprost („dopisujemy je do Twojego
-konta…”, „Wysyłamy bilet na Twój e-mail…”) i odpytuje dalej, aż oba kroki się skończą (najwyżej 3 minuty).
+Bilet jest od razu, a kroki 4 i 5 ruszają w tym samym żądaniu webhooka (budzik outboxu albo praca w tle), więc trwają
+sekundy; Cron jest tylko siatką bezpieczeństwa. Strona mówi wprost, co jeszcze trwa („dopisujemy je do Twojego
+konta…”, „Wysyłamy bilet na Twój e-mail…”), i odpytuje dalej, aż oba kroki się skończą (najwyżej 3 minuty).
+`GET /api/loyalty` sam dokańcza zaległe naliczenie, więc saldo z punktami za zakup widać od razu po płatności.
+
+## Etap IV: lista oczekujących
+
+Lista oczekujących dokłada do sali kolejkę. Zwolnione miejsce dostaje pierwsza osoba z kolejki jako **zwykłą rezerwację
+z etapu I** (`reservations` + fotel `reserved` z `expiresAt` = teraz + TTL), więc płatność, punkty, strażnik sesji,
+kompensacje i bilet działają bez zmian, a link w mailu prowadzi do strony płatności tej rezerwacji.
+
+### Gdzie zapisujemy
+
+- **`waitlist`** (migracja 0007): `id` (`waitlistId`), `seq` (kolejność zapisów, z niej pozycja), `eventId`, `email`,
+  `customerName`, `status`, a od oferty `reservationId`, `seatId`, `offerExpiresAt` (= `expiresAt` rezerwacji),
+  `emailId` i `emailStatus` maila z ofertą oraz `adres` sklepu (link w mailu). Jeden aktywny zapis klienta na
+  wydarzenie (indeks unikalny na `waiting`/`offered`), jedna oferta na rezerwację.
+- Pozycja nie jest zapisana, tylko liczona: czekający z mniejszym `seq` + 1. Wypisanie przesuwa więc wszystkich od razu.
+
+| Status | Znaczy | Skąd |
+|---|---|---|
+| `waiting` | czeka w kolejce | zapis |
+| `offered` | ma zarezerwowane miejsce do `offerExpiresAt` | karta B: fotel był do wzięcia i osoba nadal czekała (jedna transakcja) |
+| `done` | kupił bilet | w transakcji z biletem (`zaksieguj`) albo przy przesunięciu kolejki |
+| `missed` | nie zapłacił na czas albo mail do niego nie doszedł | koniec oferty bez biletu, webhook Resend `email.bounced`/`email.failed`, trwała odmowa Resend przy wysyłce |
+| `left` | wypisał się | `DELETE /api/waitlist/:id` |
+
+### Jak karta B daje znać karcie C (ktoś dostał miejsce)
+
+Przez outbox, w **tej samej transakcji** co oferta: fotel dla osoby, wpis rezerwacji, status `offered` i job
+`mail-oferta:<reservationId>`. Oferta bez maila albo mail bez oferty nie są możliwe. Job rusza od razu (budzik albo
+żądanie, które przesunęło kolejkę), a wysłany mail zapisuje `emailId` przy ofercie.
+
+### Jak karta C daje znać karcie B (mail nie doszedł)
+
+Webhook Resend z podpisem Svix: `email.bounced` albo `email.failed` dla `emailId` oferty. W **jednej transakcji** z wpisem
+do inboxu (duplikat niczego nie powtarza): oferta → `missed`, fotel i rezerwacja wygasają teraz (chyba że już kupione),
+strażnik sesji tej rezerwacji dostaje termin „teraz” (odda wydane punkty) i job `lista-kolejka` dostaje termin „teraz”.
+To samo, gdy Resend odmówi wysyłki na stałe (np. adres spoza sandboksa). Kolejkę przesuwa wtedy budzik albo najbliższy
+odczyt, więc miejsce dostaje następna osoba w sekundy.
+
+### Kiedy kolejka się przesuwa
+
+Kolejka nie czeka na Crona (na darmowym Vercelu chodziłby raz na dobę, na Cloudflare co minutę):
+
+1. **Leniwie, przy każdym odczycie i rezerwacji na tej sali** (`GET /api/events/:id`, `POST /api/reservations`,
+   `POST /api/events/:id/waitlist`, `GET`/`DELETE /api/waitlist/:id`), gdy ktoś czeka. Dzięki temu zwolnione miejsce
+   najpierw dostaje kolejka, a dopiero potem przypadkowy klient (pierwszeństwo listy).
+2. **Job `lista-kolejka`** z terminem na najbliższe wygaśnięcie rezerwacji na sali, wykonywany przez budzik w tej sekundzie,
+   gdy nikt nie czyta.
+3. **Cron** co minutę jako siatka bezpieczeństwa.
+
+Przesunięcie jest idempotentne i bezpieczne równolegle: oferta to warunkowy zapis fotela (wolny albo z wygasłą
+rezerwacją) z warunkiem, że osoba nadal czeka, więc jedno miejsce nie trafi do dwóch osób, a jedna osoba nie dostanie
+dwóch miejsc.
+
+### Wydarzenie testowe
+
+`waitlist-test`: jedna sala 1 × 2 (fotele `A1`, `A2`), cena 32 zł. Na produkcję wstawia je migracja 0007 (seed tam nie
+działa), a w testach seed. Kupione bilety zostają, więc kolejny test na produkcji potrzebuje wolnych miejsc.

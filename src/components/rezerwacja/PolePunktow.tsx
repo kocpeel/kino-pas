@@ -2,9 +2,12 @@
 
 // Karta B etapu III: pole „Użyj punktów” w koszyku. Podpowiada, ile najwięcej (połowa ceny, ale nie więcej,
 // niż klient ma), a cena i przycisk w Liczniku zmieniają się od razu. Ostatnie słowo ma serwer (Voucherify).
+// Gdy ta przeglądarka nie zna e-maila rezerwacji (np. miejsce z listy oczekujących otwarte z linku w mailu),
+// pole najpierw o niego prosi: punkty i tak schodzą z konta e-maila, na który jest rezerwacja.
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Przycisk } from "@/components/ui/Przycisk";
+import { KOMUNIKATY_POL, normalizujEmail } from "@/lib/domain/dane-klienta";
 import { maksPunktow } from "@/lib/domain/punkty";
 import { formatujCene } from "@/lib/format";
 import { czyPrzerwane, pobierzSaldo } from "@/lib/klient/api";
@@ -22,7 +25,9 @@ interface Props {
   odswiezenie?: number;
 }
 
-export function PolePunktow({ email, amount, punkty, onZmiana, ustalone, wylaczone, odswiezenie = 0 }: Props) {
+export function PolePunktow({ email: znany, amount, punkty, onZmiana, ustalone, wylaczone, odswiezenie = 0 }: Props) {
+  const [podany, ustawPodany] = useState<string | null>(null);
+  const email = znany ?? podany;
   const [saldo, ustawSaldo] = useState<{ wersja: string; punkty: number | null } | null>(null);
   const wersja = `${email}|${odswiezenie}`;
 
@@ -45,7 +50,7 @@ export function PolePunktow({ email, amount, punkty, onZmiana, ustalone, wylaczo
       </p>
     );
   }
-  if (!email) return null;
+  if (!email) return <EmailDoPunktow wylaczone={wylaczone} onEmail={ustawPodany} />;
 
   const znane = saldo?.wersja === wersja ? saldo : null;
   const maks = Math.min(znane?.punkty ?? 0, maksPunktow(amount));
@@ -86,5 +91,48 @@ export function PolePunktow({ email, amount, punkty, onZmiana, ustalone, wylaczo
         {podpowiedz}
       </p>
     </div>
+  );
+}
+
+/** Przeglądarka nie zna e-maila rezerwacji: o niego prosimy, żeby pokazać saldo punktów. */
+function EmailDoPunktow({ wylaczone, onEmail }: { wylaczone: boolean; onEmail: (email: string) => void }) {
+  const [tekst, ustawTekst] = useState("");
+  const [blad, ustawBlad] = useState<string | null>(null);
+  function sprawdz(zdarzenie: FormEvent) {
+    zdarzenie.preventDefault();
+    const adres = normalizujEmail(tekst);
+    if (!adres) {
+      ustawBlad(KOMUNIKATY_POL.email);
+      return;
+    }
+    ustawBlad(null);
+    onEmail(adres);
+  }
+  return (
+    <form className="punkty" onSubmit={sprawdz} noValidate>
+      <label htmlFor="punkty-email" className="pole__etykieta">
+        Masz punkty? Podaj e-mail z rezerwacji
+      </label>
+      <div className="punkty__wiersz">
+        <input
+          id="punkty-email"
+          className="pole__wejscie punkty__wejscie"
+          type="email"
+          inputMode="email"
+          autoComplete="email"
+          value={tekst}
+          disabled={wylaczone}
+          aria-invalid={blad ? true : undefined}
+          aria-describedby="punkty-email-podpowiedz"
+          onChange={(e) => ustawTekst(e.target.value)}
+        />
+        <Przycisk type="submit" wariant="drugi" disabled={wylaczone}>
+          Sprawdź punkty
+        </Przycisk>
+      </div>
+      <p id="punkty-email-podpowiedz" className="pole__podpowiedz">
+        {blad ?? "Punkty schodzą z konta e-maila, na który jest ta rezerwacja (np. podanego przy zapisie na listę oczekujących)."}
+      </p>
+    </form>
   );
 }

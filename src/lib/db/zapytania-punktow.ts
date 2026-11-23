@@ -82,6 +82,32 @@ export function zdaniePowitanie(db: D1Database, email: string, saldo: number | n
     .bind(email, saldo, teraz);
 }
 
+/**
+ * Joby punktów tego klienta, których termin już minął: strażnik sesji po końcu rezerwacji (oddaje wydane punkty),
+ * oddanie punktów i naliczenie po zakupie. Zaraz po strażniku idzie jego oddanie punktów, bo powstaje w trakcie.
+ * Klient jest w sadze (`results.email`), bo e-mail z fotela znika po wygaśnięciu rezerwacji.
+ */
+export async function zalegleJobyPunktowKlienta(db: D1Database, email: string, teraz: number): Promise<string[]> {
+  const { results } = await db
+    .prepare(
+      `SELECT o.id, o.task, s.id AS rezerwacja FROM outbox o
+         JOIN sagas s ON s.id = json_extract(o.input, '$.reservationId')
+        WHERE o.completedAt IS NULL AND o.hasError = 0 AND o.visibleAt <= ?2
+          AND o.task IN ('stripe-session-watch', 'punkty-zwrot', 'punkty-naliczenie')
+          AND json_extract(s.results, '$.email') = ?1
+        ORDER BY o.visibleAt
+        LIMIT 3`,
+    )
+    .bind(email, teraz)
+    .all<{ id: string; task: string; rezerwacja: string }>();
+  const ids: string[] = [];
+  for (const w of results) {
+    ids.push(w.id);
+    if (w.task === "stripe-session-watch") ids.push(`punkty-zwrot:${w.rezerwacja}`);
+  }
+  return [...new Set(ids)];
+}
+
 // ——— Saga zakupu ———
 
 export type KrokSagi = "punkty" | "platnosc" | "bilet" | "naliczenie" | "mail";

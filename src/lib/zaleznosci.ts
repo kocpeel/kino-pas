@@ -4,6 +4,7 @@
 import type { Zegar } from "./czas";
 import type { Konfiguracja } from "./config";
 import type { UslugaPunktow } from "./domain/konto-punktowe";
+import type { BramkaMaili } from "./maile/resend";
 import type { BramkaPlatnosci } from "./domain/platnosc";
 import type { SeansNaLiscie, SzczegolySeansu } from "./domain/typy";
 import type { CacheZLimitem } from "./resilience/cache";
@@ -42,4 +43,11 @@ export interface Zaleznosci {
   punkty?: UslugaPunktow | undefined;
   /** Sekret webhooka Resend (Svix): los wysłanego maila. */
   sekretWebhookaResend?: string | undefined;
+  /** Resend: mail z ofertą z listy oczekujących wychodzi od razu, a nie dopiero z Cronem. */
+  maile?: BramkaMaili | undefined;
+  /**
+   * Budzi Durable Object, który wykonuje joby outboxu w ich terminie (src/lib/budzik). undefined = go nie ma
+   * (`next dev`, testy): wtedy pracę od razu robi samo żądanie w tle, a resztę Cron.
+   */
+  budzik?: (() => void) | undefined;
 }

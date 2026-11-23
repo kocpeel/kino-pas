@@ -6,6 +6,7 @@ import { CacheZLimitem } from "../../src/lib/resilience/cache";
 import {
   lancuchLimiterow,
   ocenProbe,
+  sprawdzLimitIp,
   sprawdzLimityRezerwacji,
   TIMEOUT_LIMITERA_MS,
   type Limiter,
@@ -233,6 +234,15 @@ describe("rate limiting", () => {
       sprawdzLimityRezerwacji({ ip: zawieszony }, { ip: "1.1.1.1", email: "a@b.pl" }, 60),
     ).resolves.toBeUndefined();
     expect(Date.now() - start).toBeLessThan(TIMEOUT_LIMITERA_MS + 1000);
+    ostrzezenie.mockRestore();
+  });
+
+  it("czas na limiter z konfiguracji: krótszy timeout przepuszcza wcześniej", async () => {
+    const zawieszony: Limiter = { limit: () => new Promise(() => {}) };
+    const ostrzezenie = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const start = Date.now();
+    await expect(sprawdzLimitIp(zawieszony, "1.1.1.1", 50)).resolves.toBeUndefined();
+    expect(Date.now() - start).toBeLessThan(TIMEOUT_LIMITERA_MS);
     ostrzezenie.mockRestore();
   });
 });

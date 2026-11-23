@@ -179,8 +179,11 @@ export interface KontekstPlatnosci {
   teraz: number;
 }
 
-/** Ile checkout z punktami czeka, gdy na punktach klienta trwa inna operacja (np. podwójne kliknięcie). */
-const CZEKAJ_NA_KONTO_MS = 4000;
+/**
+ * Ile checkout z punktami czeka, gdy na punktach klienta trwa inna operacja (np. druga karta przeglądarki
+ * płaci punktami w tej samej chwili). Wtedy drugi checkout zobaczy już saldo po pierwszym i odmówi 422.
+ */
+const CZEKAJ_NA_KONTO_MS = 8000;
 
 function opisZablokowanych(punkty: number): string {
   return punkty > 0
@@ -323,9 +326,8 @@ async function wydajPunkty(k: KontekstPlatnosci, w: WierszRezerwacji, punkty: nu
       throw zaMaloPunktow(await oddajObciete(proba, wydanieId, zeszlo, wynik.saldo), punkty);
     });
   } catch (blad) {
-    if (blad instanceof KontoZajete) {
-      throw new BladDomenowy("PUNKTY_NIEDOSTEPNE", { komunikat: "Trwa inna operacja na Twoich punktach. Spróbuj za chwilę.", ponowZaS: 2 });
-    }
+    // Konflikt z równoległą operacją na tych samych punktach to odmowa (409), a nie awaria serwera.
+    if (blad instanceof KontoZajete) throw new BladDomenowy("PUNKTY_ZAJETE", { ponowZaS: 2 });
     if (blad instanceof BladPunktow) {
       if (czyBrakPunktow(blad)) throw new BladDomenowy("ZA_MALO_PUNKTOW", { przyczyna: blad });
       console.error("Voucherify przy wydaniu punktów:", blad.message);
@@ -476,9 +478,11 @@ function czyZdarzenieOplacenia(typ: string): boolean {
 export interface WynikZdarzenia extends WynikRozliczenia {
   /** Seans, którego stan mógł się zmienić. */
   eventId: string | null;
+  /** Rezerwacja, której dotyczyło zdarzenie (jej kolejne kroki sagi warto zacząć od razu). */
+  reservationId: string | null;
 }
 
-const BEZ_SKUTKU: WynikZdarzenia = { biletWydany: false, zwrotZaplanowany: false, duplikat: false, eventId: null };
+const BEZ_SKUTKU: WynikZdarzenia = { biletWydany: false, zwrotZaplanowany: false, duplikat: false, eventId: null, reservationId: null };
 
 /**
  * Obsługa zdarzenia z webhooka. Inne typy i cudze rezerwacje kończą się bez skutku, bo jedno konto Stripe
@@ -510,5 +514,5 @@ export async function obsluzZdarzeniePlatnosci(
     idZdarzenia: zdarzenie.id,
     ...(opcje.generujKod ? { generujKod: opcje.generujKod } : {}),
   });
-  return { ...wynik, eventId: rezerwacja.eventId };
+  return { ...wynik, eventId: rezerwacja.eventId, reservationId: rezerwacja.id };
 }

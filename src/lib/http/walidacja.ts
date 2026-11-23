@@ -84,11 +84,16 @@ export function kluczIdempotencji(zadanie: Request): string | undefined {
 export async function wejscieRezerwacji(zadanie: Request): Promise<WejscieRezerwacji> {
   const klucz = kluczIdempotencji(zadanie);
   const cialo = await czytajObiektJson(zadanie);
-  return walidujRezerwacje({
-    eventId: cialo.eventId,
-    seatId: cialo.seatId,
-    name: cialo.name,
-    email: cialo.email,
-    ...(klucz !== undefined ? { idempotencyKey: klucz } : {}),
-  });
+  // Kontrakt: `customerName`. Dawna nazwa `name` działa dalej, gdy `customerName` nie ma w ciele.
+  const poleImienia = cialo.customerName !== undefined || cialo.name === undefined ? "customerName" : "name";
+  return walidujRezerwacje(
+    {
+      eventId: cialo.eventId,
+      seatId: cialo.seatId,
+      name: poleImienia === "customerName" ? cialo.customerName : cialo.name,
+      email: cialo.email,
+      ...(klucz !== undefined ? { idempotencyKey: klucz } : {}),
+    },
+    poleImienia,
+  );
 }

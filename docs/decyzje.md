@@ -52,7 +52,7 @@ Cron jest w osobnym Workerze, bo Worker generowany przez OpenNext obsługuje tyl
 |---|---|---|
 | Timeout | `resilience/timeout.ts` (serwer, `DB_TIMEOUT_MS`), `klient/api.ts` (8 s, każdy fetch) | Zapytania D1 nie da się anulować, dlatego ponowienia są idempotentne. |
 | Retry | `klient/api.ts` | GET: 3 próby, backoff z pełnym jitterem, szanuje `Retry-After` ≤ 5 s. POST rezerwacji tylko z kluczem. `POST /checkout` też, bo każda próba daje tę samą sesję. |
-| Rate limiting | `resilience/limit-zapytan.ts`, binding Workers Rate Limiting (sito), Durable Object `LimiterZadan` (ścisły) | Osobno IP i e-mail (oba jako skrót SHA-256). Docelowo na IP dwie reguły: 10 prób/min i 12 rezerwacji w czasie TTL, na e-mail 5 prób/min. W trybie oceny etapu tylko 50 prób / 10 s na IP (sekcja 12). Awaria albo brak odpowiedzi limitera w 1 s = przepuszczamy (fail-open). |
+| Rate limiting | `resilience/limit-zapytan.ts`, binding Workers Rate Limiting (sito), Durable Object `LimiterZadan` (ścisły) | Osobno IP i e-mail (oba jako skrót SHA-256). Docelowo na IP dwie reguły: 10 prób/min i 12 rezerwacji w czasie TTL, na e-mail 5 prób/min. W trybie oceny etapu tylko 50 prób / 10 s na IP (sekcja 12). Awaria albo brak odpowiedzi limitera w 1 s (`RATE_LIMITER_TIMEOUT_MS`) = przepuszczamy (fail-open). |
 | Limit aktywnych rezerwacji | podzapytanie w UPDATE | Założenie spoza treści zadania. `MAX_ACTIVE_RESERVATIONS_PER_EMAIL=0` wyłącza. |
 | Load shedding + bulkhead | `resilience/przeciazenie.ts` | Osobne pule odczytów i zapisów, priorytety płatność (checkout, webhook) > rezerwacja > szczegóły > lista. Liczniki per izolat (przybliżenie). |
 | Fallback | `http/odczyty.ts` | Lista z cache (izolat + Cache API), baner „Pokazujemy dane sprzed chwili", rezerwowanie wyłączone. |
@@ -314,3 +314,45 @@ powtórka z tym samym `Idempotency-Key` zwraca ten sam mail. Klucz Resend ma tyl
 zakłada się w panelu, a jego sekret trafia do `RESEND_WEBHOOK_SECRET`. Lokalnie przeszła też cała saga na prawdziwym
 Voucherify i Resend: saldo w formularzu, wydanie 1000 pkt, sesja Stripe na 22 zł oraz kompensacja po wygaśnięciu
 rezerwacji (strażnik wygasza sesję i oddaje punkty).
+
+## 15. Kryteria etapu III i etap IV: lista oczekujących
+
+Kryteria etapu III (dokument „Kryteria etapów I–III”) i zadanie etapu IV. Droga i miejsca zapisu są w
+[kontrakt-wewnetrzny.md](kontrakt-wewnetrzny.md#etap-iv-lista-oczekujących), zagrożenia D33–D46 w [zagrozenia.md](zagrozenia.md).
+
+**Terminy co do sekundy, a nie z Crona.** Kryteria III.A2 i III.B3 każą widzieć punkty za zakup i zwrot punktów
+najpóźniej 15 s po zdarzeniu, a etap IV wymaga, żeby miejsce przechodziło na następną osobę zaraz po końcu oferty.
+Cron chodzi co minutę (na darmowym Vercelu raz na dobę), więc nie wystarcza. Trzy warstwy, każda z tym samym claimem
+outboxu (job wykona się raz): budzik outboxu, czyli Durable Object z alarmem na `visibleAt` najbliższego joba;
+praca w tle żądania, które wywołało zdarzenie (webhook płatności od razu rusza naliczenie i mail); leniwe dokończenie
+przy odczycie (`GET /api/loyalty` kończy zaległe operacje klienta, odczyty listy przesuwają kolejkę). Cron zostaje
+siatką bezpieczeństwa. To ta sama zasada co leniwe wygasanie rezerwacji z sekcji 2.
+
+**Zajęte konto punktów to 409, nie 503.** Gdy dwie karty przeglądarki płacą punktami naraz (III.B2), druga czeka
+na blokadę do 8 s i zwykle dostaje 422 z aktualnym saldem. Gdyby czekała dłużej, odpowiada 409 `points_busy`:
+to konflikt z równoległą operacją klienta, a nie awaria serwera.
+
+**Limit odczytów salda na IP.** III.A3: 60 odczytów na minutę z jednego adresu, potem 429 z `Retry-After`. Ścisły
+limiter na Durable Objekcie, jak przy rezerwacjach; awaria limitera przepuszcza (poprawność daje baza i budżet
+Voucherify). Checkout czyta saldo sam, więc limit odczytów nie blokuje płacenia punktami.
+
+**`customerName` w rezerwacji.** Wspólny kontrakt nazywa pole `customerName`, a my od etapu I czytaliśmy `name` (ten sam
+błąd wytknięto w ocenach innej firmy). Teraz kontrakt to `customerName`, a `name` działa dalej dla zgodności wstecz.
+
+**Miejsce z listy to zwykła rezerwacja z etapu I.** Tak mówi zadanie, i to upraszcza resztę: płatność, punkty,
+strażnik sesji, kompensacje i bilet działają bez zmian. Oferta powstaje w jednej transakcji (fotel, wpis rezerwacji,
+status `offered`, job maila) i tylko wtedy, gdy fotel był do wzięcia, a osoba nadal czekała.
+
+**Pierwszeństwo listy.** Gdy ktoś czeka, każda rezerwacja i każdy odczyt sali najpierw przesuwa kolejkę. Bez tego
+zwolnione miejsce mógłby zabrać przypadkowy klient, który odświeżył mapę sekundę po wygaśnięciu rezerwacji.
+
+**`position` po wyjściu z kolejki to 0.** Kontrakt każe zawsze zwracać `position` liczone od 1. Dla `waiting` to
+miejsce w kolejce; dla pozostałych statusów osoba już nie czeka, więc 0. `seatId` w `GET /api/waitlist/:id` jest
+dodatkiem do kontraktu (panel pokazuje miejsce i buduje link do płatności).
+
+**Wypisanie po zakupie to 409.** Po `done` nie ma z czego się wypisać, a bilet zostaje. Drugie wypisanie i wypisanie
+po `missed` to 200 bez zmian, więc ponowienie DELETE jest bezpieczne.
+
+**Wydarzenie `waitlist-test` w migracji.** Kontrakt wymaga go w `GET /api/events`, a na produkcji seed nie działa, więc
+wstawia je migracja 0007 (`INSERT OR IGNORE`). Kupione na nim bilety zostają jak każde inne: kolejny test na
+produkcji potrzebuje wolnych miejsc (decyzja o czyszczeniu należy do zespołu, nie do aplikacji).

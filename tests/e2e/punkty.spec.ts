@@ -1,6 +1,6 @@
 // Etap III w przeglądarce: saldo po wpisaniu e-maila (karta A), „Użyj punktów” i „Zapłać 22 zł” (karta B),
 // podsumowanie na stronie biletu (karta C). Sztuczny Voucherify i sztuczny Stripe, prawdziwe podpisy webhooków.
-// Kroki po bilecie (naliczenie, mail) robi Cron, którego w e2e nie ma: strona pokazuje je jako trwające.
+// Kroki po bilecie (naliczenie, mail) ruszają od razu po płatności; w e2e nie ma Resend, więc mail czeka.
 
 import { expect, test } from "@playwright/test";
 import { seanse, stanStripe, unikalnyEmail, wolnyFotel } from "./pomocnicze";
@@ -42,7 +42,8 @@ test("nowy klient płaci 1000 punktami: sesja na 22 zł, a bilet pokazuje podsum
 
   const { webhooki } = await stanStripe(request);
   expect(webhooki.at(-1)?.status).toBe(200);
-  expect((await (await request.get(`/api/loyalty?email=${encodeURIComponent(email)}`)).json()).points).toBe(0);
+  // Kryterium III.A2: punkty za zakup widać od razu (GET /api/loyalty dokańcza naliczenie): 1000 − 1000 + 220.
+  expect((await (await request.get(`/api/loyalty?email=${encodeURIComponent(email)}`)).json()).points).toBe(220);
 });
 
 test("API: za dużo punktów 400, a punkty ustala pierwszy checkout", async ({ request }) => {
