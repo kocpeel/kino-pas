@@ -71,7 +71,8 @@
     // z zapasem 10, a odczyty salda (GET /api/loyalty) dostają najwyżej 40, żeby zostały wywołania na zakupy.
     // Saldo z pamięci podręcznej uchodzi za aktualne przez 30 s.
     // Sekrety: VOUCHERIFY_APP_ID, VOUCHERIFY_SECRET_KEY, VOUCHERIFY_CAMPAIGN_ID (i opcjonalnie VOUCHERIFY_API_URL),
-    // RESEND_API_KEY (u Workera Crona: wysyła maile) i RESEND_WEBHOOK_SECRET (tu: los maila). Zob. README.
+    // RESEND_API_KEY (w obu Workerach: maile wysyła Cron i budzik outboxu) i RESEND_WEBHOOK_SECRET (tu: los maila).
+    // Zob. README.
     "VOUCHERIFY_CALLS_PER_HOUR": "90",
     "VOUCHERIFY_READS_PER_HOUR": "40",
     "LOYALTY_CACHE_SECONDS": "30"
