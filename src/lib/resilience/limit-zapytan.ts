@@ -3,6 +3,7 @@
 // i ścisły limiter na Durable Object (`LimiterZadan`), który naprawdę egzekwuje limit.
 // Awaria albo brak odpowiedzi limitera nie blokuje sprzedaży (fail-open), bo poprawność zapewnia baza.
 
+import { TIMEOUT_LIMITERA_MS } from "../config";
 import { BladDomenowy } from "../domain/bledy";
 import type { LimiterZadan } from "./limiter-zadan";
 import { zTimeoutem } from "./timeout";
@@ -15,7 +16,16 @@ export interface Limiter {
 export interface Limitery {
   ip?: Limiter | undefined;
   email?: Limiter | undefined;
+  /** GET /api/loyalty: odczyty salda na IP (III.A3). */
+  saldo?: Limiter | undefined;
+  /** POST /api/events/:id/waitlist: zapisy na listę na IP. */
+  zapisNaListe?: Limiter | undefined;
+  /** GET i DELETE /api/waitlist/:id na IP. */
+  odczytListy?: Limiter | undefined;
 }
+
+/** Okno limitów odczytów i listy oczekujących: liczby w konfiguracji są „na minutę”. */
+export const OKNO_LIMITU_MINUTOWEGO_S = 60;
 
 /** Najwyżej `limit` prób w ostatnich `oknoS` sekundach. */
 export interface RegulaLimitu {
@@ -99,17 +109,28 @@ async function skrot(tekst: string): Promise<string> {
 
 type WynikSprawdzenia = { ok: true } | { ok: false; ponowZaS: number | undefined };
 
-/** Dłużej na limiter nie czekamy: zawieszony obiekt nie może zawiesić rezerwacji. */
-export const TIMEOUT_LIMITERA_MS = 1000;
+export { TIMEOUT_LIMITERA_MS };
 
-async function sprawdz(limiter: Limiter | undefined, klucz: Promise<string>): Promise<WynikSprawdzenia> {
+/** Dłużej niż `timeoutMs` na limiter nie czekamy: zawieszony obiekt nie może zawiesić rezerwacji. */
+async function sprawdz(limiter: Limiter | undefined, klucz: Promise<string>, timeoutMs: number): Promise<WynikSprawdzenia> {
   if (!limiter) return { ok: true };
   try {
-    const wynik = await zTimeoutem(limiter.limit({ key: await klucz }), TIMEOUT_LIMITERA_MS);
+    const wynik = await zTimeoutem(limiter.limit({ key: await klucz }), timeoutMs);
     return wynik.success ? { ok: true } : { ok: false, ponowZaS: wynik.ponowZaS };
   } catch (blad) {
     console.warn("Rate limiter niedostępny, przepuszczam żądanie", blad);
     return { ok: true };
+  }
+}
+
+/**
+ * 429 z Retry-After, gdy ten adres IP przekroczył limit danego endpointu. Bez limitera (np. `next dev`)
+ * albo przy jego awarii przepuszcza: limit chroni usługę, a poprawność zapewnia baza.
+ */
+export async function sprawdzLimitIp(limiter: Limiter | undefined, ip: string, timeoutMs = TIMEOUT_LIMITERA_MS): Promise<void> {
+  const wynik = await sprawdz(limiter, skrot(ip).then((h) => `ip:${h}`), timeoutMs);
+  if (!wynik.ok) {
+    throw new BladDomenowy("LIMIT_ZAPYTAN", { ponowZaS: Math.max(1, wynik.ponowZaS ?? OKNO_LIMITU_MINUTOWEGO_S) });
   }
 }
 
@@ -118,11 +139,12 @@ export async function sprawdzLimityRezerwacji(
   limitery: Limitery,
   klient: { ip: string; email: string },
   okresS: number,
+  timeoutMs = TIMEOUT_LIMITERA_MS,
 ): Promise<void> {
   // IP i e-mail trafiają do limiterów (i do nazw obiektów) jako skróty, nie jawnym tekstem.
   const wyniki = await Promise.all([
-    sprawdz(limitery.ip, skrot(klient.ip).then((h) => `ip:${h}`)),
-    sprawdz(limitery.email, skrot(klient.email).then((h) => `email:${h}`)),
+    sprawdz(limitery.ip, skrot(klient.ip).then((h) => `ip:${h}`), timeoutMs),
+    sprawdz(limitery.email, skrot(klient.email).then((h) => `email:${h}`), timeoutMs),
   ]);
   const odmowy = wyniki.filter((w) => !w.ok);
   if (odmowy.length > 0) {

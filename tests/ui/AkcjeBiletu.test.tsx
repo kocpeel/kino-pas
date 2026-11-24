@@ -22,7 +22,7 @@ const KOD = "ABCD-1234";
 const DANE = { movie: "Metropolis", hall: "Sala 1", termin: "pt 6.11 · 19:30", rzad: "F", numer: 7 };
 
 function odpowiedz(stan: Record<string, unknown>) {
-  return { dane: { amount: 3200, expiresAt: 1, ...stan }, status: 200, przesuniecieZegara: 0, etag: null };
+  return { dane: { amount: 3200, expiresAt: 1, pointsUsed: 0, ...stan }, status: 200, przesuniecieZegara: 0, etag: null };
 }
 
 function renderuj(sesjaStripe: string | null = "cs_test_1") {
@@ -47,7 +47,7 @@ describe("AkcjeBiletu", () => {
     await act(() => vi.advanceTimersByTimeAsync(5000));
     expect(screen.queryByText("Płatność w toku…")).not.toBeInTheDocument();
     expect(screen.getByText(KOD)).toBeInTheDocument();
-    expect(screen.getByText(/Zapłacono 32 zł/)).toBeInTheDocument();
+    expect(screen.getByText("Zapłacono kartą").nextElementSibling).toHaveTextContent("32 zł");
     expect(screen.getByRole("button", { name: "Kopiuj kod" })).toBeEnabled();
     expect(odczytajKodBiletu(ID)).toBe(KOD);
 
@@ -125,6 +125,45 @@ describe("AkcjeBiletu", () => {
     fireEvent.click(screen.getByRole("button", { name: "Spróbuj ponownie" }));
     await act(() => vi.advanceTimersByTimeAsync(0));
     expect(screen.getByText(KOD)).toBeInTheDocument();
+  });
+
+  it("podsumowanie zakupu: kartą, punktami i zebrane punkty; stan pośredni sam się kończy", async () => {
+    pobierzRezerwacje.mockResolvedValue(
+      odpowiedz({ status: "paid", code: KOD, pointsUsed: 1000, pointsEarned: 220, pointsStatus: "pending", emailStatus: "pending" }),
+    );
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText("Zapłacono kartą").nextElementSibling).toHaveTextContent("22 zł");
+    expect(screen.getByText("Zapłacono punktami").nextElementSibling).toHaveTextContent("1000 pkt (10 zł)");
+    expect(screen.getByText("Zebrane punkty").nextElementSibling).toHaveTextContent("+220 pkt");
+    expect(screen.getByText(/dopisujemy je do Twojego konta/)).toBeInTheDocument();
+    expect(screen.getByText("Wysyłamy bilet na Twój e-mail…")).toBeInTheDocument();
+
+    pobierzRezerwacje.mockResolvedValue(
+      odpowiedz({ status: "paid", code: KOD, pointsUsed: 1000, pointsEarned: 220, pointsStatus: "done", emailStatus: "sent" }),
+    );
+    await act(() => vi.advanceTimersByTimeAsync(6000));
+    expect(screen.queryByText(/dopisujemy je/)).not.toBeInTheDocument();
+    expect(screen.getByText("Bilet wysłaliśmy na Twój e-mail.")).toBeInTheDocument();
+    // Wszystko skończone: koniec odpytywania.
+    const liczba = pobierzRezerwacje.mock.calls.length;
+    await act(() => vi.advanceTimersByTimeAsync(60_000));
+    expect(pobierzRezerwacje).toHaveBeenCalledTimes(liczba);
+  });
+
+  it("mail odrzucony: uczciwy komunikat, bilet na stronie", async () => {
+    pobierzRezerwacje.mockResolvedValue(odpowiedz({ status: "paid", code: KOD, pointsEarned: 320, pointsStatus: "done", emailStatus: "bounced" }));
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText(KOD)).toBeInTheDocument();
+    expect(screen.getByText(/Mail z biletem nie doszedł/)).toBeInTheDocument();
+  });
+
+  it("płatność po czasie z punktami: pieniądze i punkty wracają", async () => {
+    pobierzRezerwacje.mockResolvedValue(odpowiedz({ status: "expired", refund: "pending", pointsUsed: 1000, pointsStatus: "pending" }));
+    renderuj();
+    await act(() => vi.advanceTimersByTimeAsync(0));
+    expect(screen.getByText(/Wydane punkty \(1000 pkt\) wracają na Twoje konto/)).toBeInTheDocument();
   });
 
   it("po odmontowaniu nie zostaje żaden timer", async () => {

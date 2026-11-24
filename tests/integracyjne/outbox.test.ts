@@ -57,20 +57,20 @@ describe("zwrot przez outbox", () => {
     const { zegar, bramka, z, reservationId, idJoba } = await platnoscPoCzasie("A1", "pi_a1");
     expect((await job(idJoba))?.completedAt).toBeNull();
 
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 1, ponowione: 0, doDlq: 0 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 1, ponowione: 0, doDlq: 0 });
     expect(bramka.zwroty).toEqual([{ paymentIntentId: "pi_a1", klucz: idJoba, reservationId }]);
     expect((await job(idJoba))?.completedAt).toBe(zegar.teraz());
     expect((await stanRezerwacji(z, reservationId)).cialo.refund).toBe("done");
 
     zegar.przewin(DOBA_MS);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 0 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 0 });
     expect(bramka.zwroty).toHaveLength(1);
   });
 
   it("zwrot i bilet nie wychodzą razem: to samo zdarzenie dwa razy = jeden job", async () => {
     const { zegar, bramka, z, reservationId } = await platnoscPoCzasie("A2", "pi_a2");
     await zaplac(z, reservationId, { paymentIntent: "pi_a2" });
-    await przetworzOutbox(env.DB, bramka, { zegar });
+    await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar });
     expect(bramka.zwroty).toHaveLength(1);
   });
 
@@ -78,17 +78,17 @@ describe("zwrot przez outbox", () => {
     const { zegar, bramka, idJoba } = await platnoscPoCzasie("A3", "pi_a3");
     bramka.awaria = new Error("Stripe nie odpowiada");
 
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ ponowione: 1 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ ponowione: 1 });
     const poBledzie = await job(idJoba);
     expect(poBledzie).toMatchObject({ totalTried: 1, completedAt: null, hasError: 0, lastError: "Stripe nie odpowiada" });
     expect(poBledzie?.visibleAt).toBe(zegar.teraz() + opoznieniePonowienia(1));
 
     // Przed visibleAt nikt go nie weźmie.
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ ponowione: 0, wyslane: 0 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ ponowione: 0, wyslane: 0 });
 
     bramka.awaria = null;
     zegar.przewin(opoznieniePonowienia(1));
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 1 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 1 });
     expect(bramka.zwroty.map((z) => z.klucz)).toEqual([idJoba]);
   });
 
@@ -99,11 +99,11 @@ describe("zwrot przez outbox", () => {
       prepare: env.DB.prepare.bind(env.DB),
       batch: () => Promise.reject(new Error("serwer padł")),
     } as unknown as D1Database;
-    await przetworzOutbox(padajaca, bramka, { zegar, limit: 1 });
+    await przetworzOutbox(padajaca, { platnosci: bramka }, { zegar, limit: 1 });
     expect(bramka.zwroty).toHaveLength(1);
 
     zegar.przewin(10 * 60_000);
-    await przetworzOutbox(env.DB, bramka, { zegar });
+    await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar });
     expect(bramka.zwroty.map((z) => z.klucz)).toEqual([idJoba, idJoba]);
     expect((await job(idJoba))?.completedAt).not.toBeNull();
   });
@@ -113,7 +113,7 @@ describe("zwrot przez outbox", () => {
     const { zegar, bramka, z, reservationId, idJoba } = await platnoscPoCzasie("A5", "pi_a5");
     bramka.awaria = new Error("Stripe ciągle odmawia");
     for (let i = 0; i < MAX_PROB; i++) {
-      await przetworzOutbox(env.DB, bramka, { zegar });
+      await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar });
       zegar.przewin(2 * 60 * 60_000);
     }
     const koniec = await job(idJoba);
@@ -124,7 +124,7 @@ describe("zwrot przez outbox", () => {
     // DLQ nie jest już brane.
     bramka.awaria = null;
     zegar.przewin(DOBA_MS);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 0 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 0 });
     expect(bramka.zwroty).toEqual([]);
 
     // Kontrola zdrowia zgłasza DLQ po 2 kontrolach, raz.
@@ -149,7 +149,7 @@ describe("zwrot przez outbox", () => {
          VALUES ('j3', 'stripe-refund', '{"paymentIntentId":"pi_j3","reservationId":"r3"}', 3, 3)`,
       ),
     ]);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ doDlq: 2, wyslane: 1 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ doDlq: 2, wyslane: 1 });
     expect((await job("j1"))?.hasError).toBe(1);
     expect((await job("j2"))?.hasError).toBe(1);
     expect(bramka.zwroty).toEqual([{ paymentIntentId: "pi_j3", klucz: "j3", reservationId: "r3" }]);
@@ -157,7 +157,7 @@ describe("zwrot przez outbox", () => {
 
   it("dwa równoległe przebiegi nie wezmą tego samego joba", async () => {
     const { zegar, bramka, idJoba } = await platnoscPoCzasie("A6", "pi_a6");
-    await Promise.all(Array.from({ length: 5 }, () => przetworzOutbox(env.DB, bramka, { zegar })));
+    await Promise.all(Array.from({ length: 5 }, () => przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })));
     expect(bramka.zwroty.map((z) => z.klucz)).toEqual([idJoba]);
   });
 });
@@ -177,13 +177,13 @@ describe("strażnik sesji", () => {
     const { zegar, bramka, idJoba } = await zSesja("B1");
     const j = await job(idJoba);
     expect(j?.visibleAt).toBe(zegar.teraz() + 60_000);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 0, odlozone: 0 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 0, odlozone: 0 });
   });
 
   it("rezerwacja ważna, sesja otwarta: odkłada się bez kary, aż do wygaśnięcia", async () => {
     const { zegar, bramka, expiresAt, idJoba } = await zSesja("B2");
     zegar.przewin(60_000);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ odlozone: 1 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ odlozone: 1 });
     expect(await job(idJoba)).toMatchObject({ totalTried: 0, completedAt: null, visibleAt: expiresAt });
     expect(bramka.wygaszone).toEqual([]);
   });
@@ -191,7 +191,7 @@ describe("strażnik sesji", () => {
   it("rezerwacja wygasła, sesja otwarta: wygasza sesję, żeby nikt nie zapłacił za stracony fotel", async () => {
     const { zegar, bramka, expiresAt, idSesji, idJoba } = await zSesja("B3");
     zegar.ustaw(expiresAt);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 1 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 1 });
     expect(bramka.wygaszone).toEqual([idSesji]);
     expect((await job(idJoba))?.completedAt).toBe(expiresAt);
   });
@@ -207,7 +207,7 @@ describe("strażnik sesji", () => {
       oplaconoO: zegar.teraz() + 30_000,
     };
     zegar.przewin(60_000);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 1 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 1 });
     expect((await stanRezerwacji(z, reservationId)).cialo.status).toBe("paid");
     const kod = (await wierszMiejsca("B4"))?.code;
     expect((await job(idJoba))?.completedAt).not.toBeNull();
@@ -215,7 +215,7 @@ describe("strażnik sesji", () => {
     await zaplac(z, reservationId, { paymentIntent: "pi_b4", paidAt: expiresAt - 1000 });
     expect((await wierszMiejsca("B4"))?.code).toBe(kod);
     expect(bramka.zwroty).toEqual([]);
-    await przetworzOutbox(env.DB, bramka, { zegar });
+    await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar });
     expect(bramka.zwroty).toEqual([]);
   });
 
@@ -230,9 +230,9 @@ describe("strażnik sesji", () => {
       oplaconoO: expiresAt + 5000,
     };
     zegar.ustaw(expiresAt + 60_000);
-    await przetworzOutbox(env.DB, bramka, { zegar });
+    await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar });
     expect((await stanRezerwacji(z, reservationId)).cialo).toMatchObject({ status: "expired" });
-    await przetworzOutbox(env.DB, bramka, { zegar });
+    await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar });
     expect(bramka.zwroty.map((w) => w.paymentIntentId)).toEqual(["pi_b5"]);
   });
 
@@ -241,7 +241,7 @@ describe("strażnik sesji", () => {
     await zaplac(z, reservationId);
     const pobierz = vi.spyOn(bramka, "pobierzSesje");
     zegar.przewin(60_000);
-    expect(await przetworzOutbox(env.DB, bramka, { zegar })).toMatchObject({ wyslane: 1 });
+    expect(await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar })).toMatchObject({ wyslane: 1 });
     expect(pobierz).not.toHaveBeenCalled();
     expect((await job(idJoba))?.completedAt).not.toBeNull();
   });
@@ -250,7 +250,7 @@ describe("strażnik sesji", () => {
     const { zegar, bramka, expiresAt, idJoba } = await zSesja("B7");
     bramka.stanSesji = { status: "expired" };
     zegar.ustaw(expiresAt + 1);
-    await przetworzOutbox(env.DB, bramka, { zegar });
+    await przetworzOutbox(env.DB, { platnosci: bramka }, { zegar });
     expect(bramka.wygaszone).toEqual([]);
     expect((await job(idJoba))?.completedAt).not.toBeNull();
   });

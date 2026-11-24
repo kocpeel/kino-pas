@@ -12,7 +12,9 @@ import { anonimizujPoSeansach, zwolnijWygasleRezerwacje } from "../../../src/lib
 import { wyczyscOutbox } from "../../../src/lib/db/zapytania-outbox";
 import { wyczyscHistorieRezerwacji, wyczyscInbox } from "../../../src/lib/db/zapytania-platnosci";
 import { przetworzOutbox, type PodsumowanieOutboxu } from "../../../src/lib/domain/outbox";
+import { bramkaResendZeSrodowiska, type SrodowiskoResend } from "../../../src/lib/maile/resend";
 import { bramkaZeSrodowiska, type SrodowiskoStripe } from "../../../src/lib/platnosci/stripe";
+import { uslugaPunktowZeSrodowiska, type SrodowiskoPunktow } from "../../../src/lib/punkty/usluga";
 import type { SrodowiskoZdrowia } from "./zdrowie";
 
 export const CRON_RETENCJI = "17 3 * * *";
@@ -22,7 +24,7 @@ const DOBA_MS = 24 * 60 * 60 * 1000;
 const PAMIEC_INBOXU_DNI = 7;
 const PAMIEC_OUTBOXU_DNI = 7;
 
-export interface SrodowiskoSprzatania extends SrodowiskoZdrowia, SrodowiskoStripe {
+export interface SrodowiskoSprzatania extends SrodowiskoZdrowia, SrodowiskoStripe, SrodowiskoResend, SrodowiskoPunktow {
   DB: D1Database;
   DATA_RETENTION_DAYS?: string;
 }
@@ -57,11 +59,18 @@ export async function sprzatnijHistorie(env: SrodowiskoSprzatania, teraz = zegar
   console.log(`Sprzątanie historii: inbox ${inbox}, outbox ${outbox}, rezerwacje ${rezerwacje}.`);
 }
 
-/** Wysyłka outboxu. Bez klucza Stripe'a wiadomości czekają w bazie, nic nie przepada. */
+/**
+ * Wysyłka outboxu: Stripe (zwroty, strażnik sesji), Voucherify (punkty) i Resend (maile). Job usługi bez klucza
+ * czeka w bazie, nic nie przepada.
+ */
 export async function wyslijOutbox(env: SrodowiskoSprzatania): Promise<PodsumowanieOutboxu | null> {
-  const bramka = bramkaZeSrodowiska(env);
-  if (!bramka) return null;
-  const wynik = await przetworzOutbox(env.DB, bramka, { zegar: zegarSystemowy });
+  const uslugi = {
+    platnosci: bramkaZeSrodowiska(env),
+    punkty: uslugaPunktowZeSrodowiska(env),
+    maile: bramkaResendZeSrodowiska(env),
+  };
+  if (!uslugi.platnosci && !uslugi.punkty && !uslugi.maile) return null;
+  const wynik = await przetworzOutbox(env.DB, uslugi, { zegar: zegarSystemowy });
   if (wynik.wyslane > 0 || wynik.ponowione > 0 || wynik.doDlq > 0) {
     console.log(`Outbox: wysłane ${wynik.wyslane}, ponowione ${wynik.ponowione}, DLQ ${wynik.doDlq}.`);
   }

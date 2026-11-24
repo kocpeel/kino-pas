@@ -52,7 +52,7 @@ Cron jest w osobnym Workerze, bo Worker generowany przez OpenNext obsługuje tyl
 |---|---|---|
 | Timeout | `resilience/timeout.ts` (serwer, `DB_TIMEOUT_MS`), `klient/api.ts` (8 s, każdy fetch) | Zapytania D1 nie da się anulować, dlatego ponowienia są idempotentne. |
 | Retry | `klient/api.ts` | GET: 3 próby, backoff z pełnym jitterem, szanuje `Retry-After` ≤ 5 s. POST rezerwacji tylko z kluczem. `POST /checkout` też, bo każda próba daje tę samą sesję. |
-| Rate limiting | `resilience/limit-zapytan.ts`, binding Workers Rate Limiting (sito), Durable Object `LimiterZadan` (ścisły) | Osobno IP i e-mail (oba jako skrót SHA-256). Docelowo na IP dwie reguły: 10 prób/min i 12 rezerwacji w czasie TTL, na e-mail 5 prób/min. W trybie oceny etapu tylko 50 prób / 10 s na IP (sekcja 12). Awaria albo brak odpowiedzi limitera w 1 s = przepuszczamy (fail-open). |
+| Rate limiting | `resilience/limit-zapytan.ts`, binding Workers Rate Limiting (sito), Durable Object `LimiterZadan` (ścisły) | Osobno IP i e-mail (oba jako skrót SHA-256). Docelowo na IP dwie reguły: 10 prób/min i 12 rezerwacji w czasie TTL, na e-mail 5 prób/min. W trybie oceny etapu tylko 50 prób / 10 s na IP (sekcja 12). Awaria albo brak odpowiedzi limitera w 1 s (`RATE_LIMITER_TIMEOUT_MS`) = przepuszczamy (fail-open). |
 | Limit aktywnych rezerwacji | podzapytanie w UPDATE | Założenie spoza treści zadania. `MAX_ACTIVE_RESERVATIONS_PER_EMAIL=0` wyłącza. |
 | Load shedding + bulkhead | `resilience/przeciazenie.ts` | Osobne pule odczytów i zapisów, priorytety płatność (checkout, webhook) > rezerwacja > szczegóły > lista. Liczniki per izolat (przybliżenie). |
 | Fallback | `http/odczyty.ts` | Lista z cache (izolat + Cache API), baner „Pokazujemy dane sprzed chwili", rezerwowanie wyłączone. |
@@ -253,3 +253,106 @@ prawdziwe SDK (`tests/e2e/sztuczny-stripe.mjs`). Podpis webhooka zawsze jest pra
 bez endpointu w panelu. Na produkcji (1.11.2026) Stripe dostarczył dwa zdarzenia `checkout.session.expired`: obie
 odpowiedzi 200, `pending_webhooks` 0. Ścieżkę biletu sprawdziło tam zdarzenie podpisane sekretem produkcji, a płatność
 kartą robi człowiek.
+
+## 14. Etap III: punkty (Voucherify) i mail (Resend) jako saga
+
+Droga i miejsca zapisu są w [kontrakt-wewnetrzny.md](kontrakt-wewnetrzny.md#etap-iii-saga-zakupu-z-punktami-e08),
+zagrożenia D17–D31 w [zagrozenia.md](zagrozenia.md). Tu są decyzje, które nie wynikają wprost z treści zadania.
+
+**Orkiestracja, nie choreografia.** Zakup ma jednego właściciela (nas), a kroki to cudze API, więc według E08 wybieramy
+orkiestrację: kolejność kroków jest w jednym miejscu, a stan zakupu w jednym wierszu `sagas`. Koordynatorem jest
+checkout (kroki 1 i 2, klient czeka na adres płatności) i outbox z Cronem (kroki po bilecie i kompensacje).
+
+**Punkty schodzą przed sesją płatności.** Treść zadania mówi, że punkty schodzą z karty w Voucherify, a sesja jest na
+kwotę po odjęciu punktów. Odwrotna kolejność (najpierw płatność) pozwoliłaby zapłacić kartą mniej za punkty, których
+klient już nie ma. Ceną jest kompensacja, gdy płatności nie będzie: strażnik sesji oddaje punkty po końcu rezerwacji.
+
+**Bilet to punkt bez odwrotu.** Po nim są tylko kroki do przodu (naliczenie, mail): ich porażka nie cofa zakupu, tylko
+czeka w outboksie, a po limicie prób ląduje w DLQ ze stanem `failed` widocznym na stronie. Mail jest ostatni,
+bo wysłanego nie da się odwołać.
+
+**Dwie kompensacje idą niezależnie, a nie „od końca”.** E08 każe cofać od ostatniego udanego kroku, bo późniejszy
+krok zwykle zależy od wcześniejszego. Tu zwrot na kartę (kompensacja kroku 2) i oddanie punktów (kroku 1) nie zależą
+od siebie, więc powstają w jednej transakcji jako dwa joby i każdy ponawia się sam. Gdyby zwrot na kartę utknął
+w DLQ, klient i tak odzyska punkty, a saga zostanie w `compensating`, aż zwrotem zajmie się człowiek.
+
+**Liczbę punktów ustala pierwszy checkout.** Zmiana po utworzeniu sesji wymagałaby wygaszenia sesji i drugiej
+operacji na punktach (więcej wywołań z budżetu 100/h i więcej miejsc na wyścig). Klient, który przerwał płatność,
+wraca do tej samej sesji z tymi samymi punktami; inna liczba to 409 `points_locked` z wyjaśnieniem.
+
+**Nieznany e-mail też sprawdzamy w Voucherify.** Z programu korzystają też aplikacja i kasy, więc e-mail, którego
+nie znamy, mógł już dostać tam kartę. `GET /api/loyalty` szuka jej jednym odczytem z budżetu. Jeśli karta jest,
+pokazujemy jej saldo i ją zapamiętujemy; jeśli jej nie ma, klient nic jeszcze nie kupił i ma 1000. Karty przy samym odczycie nie
+zakładamy (GET bez skutków ubocznych, a każdy mógłby nim zużyć budżet), więc kartę i punkty powitalne zakłada
+pierwszy zakup. Gdy Voucherify albo budżet odmówi, odpowiadamy 1000 z `X-Data-Stale`.
+
+**Pochodzenie karty pamiętamy u siebie.** Punkty powitalne należą się nowemu klientowi, a nie klientowi z kas.
+Voucherify tego nie rozróżni: metadane z zapisu do programu trafiają do publikacji, a nie na kartę. Dlatego przed
+założeniem karty zapisujemy notatkę `cardRequestedAt` (jak notatki „niepewne”): karta znaleziona przy notatce jest
+nasza z przerwanej próby (powitalne po sprawdzeniu historii), a bez notatki przyszła z innego kanału.
+
+**E-mail w adresie `GET /api/loyalty?email=`.** Tak mówi kontrakt. Strona woła go przez `fetch`, więc adres nie trafia
+do historii przeglądarki, ale trafia do logów żądań Cloudflare; nasze logi e-maila nie wypisują. Saldo dowolnego
+e-maila widzi każdy, kto ten e-mail zna: to ten sam kompromis co kod biletu po samym identyfikatorze (sekcja 12).
+
+**Obcięte odjęcie: korekta i 422.** Sandbox pokazał, że Voucherify nie odmawia odjęcia większego niż saldo, tylko
+zdejmuje tyle, ile jest (odpowiedź mówi to w `points`: −300 przy prośbie o −500, a przy saldzie 0 zwraca `points: 0`
+i nie zapisuje operacji). Saldo sprawdzamy przed wydaniem, ale z pamięci (do 30 s), a kasa mogła w tym czasie wydać
+punkty. Bez tej obsługi zapisalibyśmy `pointsUsed` większe niż to, co zeszło, i sesja dałaby rabat bez pokrycia.
+Dlatego bramka zwraca faktyczną zmianę, a gdy zeszło mniej, niż klient chciał wydać, od razu oddajemy to, co zeszło
+(`korekta:<source_id próby>`), i odpowiadamy 422 z aktualnym saldem. Następna próba tej rezerwacji ma własny
+`source_id` (`wydanie:<id>:2`), więc historia karty zostaje jednoznaczna. Gdy korekta się nie uda, zostaje notatka
+„niepewne”: ponowiony checkout albo strażnik po końcu rezerwacji policzy z historii karty, ile naprawdę zeszło
+(wydanie minus korekta), i odda tylko to.
+
+**Sprawdzone na prawdziwych usługach (17.11.2026).** Voucherify, nasza bramka na sandboksie: szukanie karty po
+e-mailu (`customer` = nasz `source_id`), założenie karty, saldo z `loyalty_card.balance`, dodanie i odjęcie z naszym
+`source_id`, historia karty od najnowszej (`order=-id`) z `source_id` i liczbą punktów w `details.balance.points`,
+operacja widoczna w historii od razu; drugi zapis tego samego klienta zwraca jego kartę (bez błędu); odjęcie ponad
+saldo jest obcinane (wyżej). Resend, nasza bramka i szablon: mail na `delivered+…@resend.dev` i `bounced+…@resend.dev`,
+powtórka z tym samym `Idempotency-Key` zwraca ten sam mail. Klucz Resend ma tylko prawo wysyłki, więc webhook Resend
+zakłada się w panelu, a jego sekret trafia do `RESEND_WEBHOOK_SECRET`. Lokalnie przeszła też cała saga na prawdziwym
+Voucherify i Resend: saldo w formularzu, wydanie 1000 pkt, sesja Stripe na 22 zł oraz kompensacja po wygaśnięciu
+rezerwacji (strażnik wygasza sesję i oddaje punkty).
+
+## 15. Kryteria etapu III i etap IV: lista oczekujących
+
+Kryteria etapu III (dokument „Kryteria etapów I–III”) i zadanie etapu IV. Droga i miejsca zapisu są w
+[kontrakt-wewnetrzny.md](kontrakt-wewnetrzny.md#etap-iv-lista-oczekujących), zagrożenia D33–D46 w [zagrozenia.md](zagrozenia.md).
+
+**Terminy co do sekundy, a nie z Crona.** Kryteria III.A2 i III.B3 każą widzieć punkty za zakup i zwrot punktów
+najpóźniej 15 s po zdarzeniu, a etap IV wymaga, żeby miejsce przechodziło na następną osobę zaraz po końcu oferty.
+Cron chodzi co minutę (na darmowym Vercelu raz na dobę), więc nie wystarcza. Trzy warstwy, każda z tym samym claimem
+outboxu (job wykona się raz): budzik outboxu, czyli Durable Object z alarmem na `visibleAt` najbliższego joba;
+praca w tle żądania, które wywołało zdarzenie (webhook płatności od razu rusza naliczenie i mail); leniwe dokończenie
+przy odczycie (`GET /api/loyalty` kończy zaległe operacje klienta, odczyty listy przesuwają kolejkę). Cron zostaje
+siatką bezpieczeństwa. To ta sama zasada co leniwe wygasanie rezerwacji z sekcji 2.
+
+**Zajęte konto punktów to 409, nie 503.** Gdy dwie karty przeglądarki płacą punktami naraz (III.B2), druga czeka
+na blokadę do 8 s i zwykle dostaje 422 z aktualnym saldem. Gdyby czekała dłużej, odpowiada 409 `points_busy`:
+to konflikt z równoległą operacją klienta, a nie awaria serwera.
+
+**Limit odczytów salda na IP.** III.A3: 60 odczytów na minutę z jednego adresu, potem 429 z `Retry-After`. Ścisły
+limiter na Durable Objekcie, jak przy rezerwacjach; awaria limitera przepuszcza (poprawność daje baza i budżet
+Voucherify). Checkout czyta saldo sam, więc limit odczytów nie blokuje płacenia punktami.
+
+**`customerName` w rezerwacji.** Wspólny kontrakt nazywa pole `customerName`, a my od etapu I czytaliśmy `name` (ten sam
+błąd wytknięto w ocenach innej firmy). Teraz kontrakt to `customerName`, a `name` działa dalej dla zgodności wstecz.
+
+**Miejsce z listy to zwykła rezerwacja z etapu I.** Tak mówi zadanie, i to upraszcza resztę: płatność, punkty,
+strażnik sesji, kompensacje i bilet działają bez zmian. Oferta powstaje w jednej transakcji (fotel, wpis rezerwacji,
+status `offered`, job maila) i tylko wtedy, gdy fotel był do wzięcia, a osoba nadal czekała.
+
+**Pierwszeństwo listy.** Gdy ktoś czeka, każda rezerwacja i każdy odczyt sali najpierw przesuwa kolejkę. Bez tego
+zwolnione miejsce mógłby zabrać przypadkowy klient, który odświeżył mapę sekundę po wygaśnięciu rezerwacji.
+
+**`position` po wyjściu z kolejki to 0.** Kontrakt każe zawsze zwracać `position` liczone od 1. Dla `waiting` to
+miejsce w kolejce; dla pozostałych statusów osoba już nie czeka, więc 0. `seatId` w `GET /api/waitlist/:id` jest
+dodatkiem do kontraktu (panel pokazuje miejsce i buduje link do płatności).
+
+**Wypisanie po zakupie to 409.** Po `done` nie ma z czego się wypisać, a bilet zostaje. Drugie wypisanie i wypisanie
+po `missed` to 200 bez zmian, więc ponowienie DELETE jest bezpieczne.
+
+**Wydarzenie `waitlist-test` w migracji.** Kontrakt wymaga go w `GET /api/events`, a na produkcji seed nie działa, więc
+wstawia je migracja 0007 (`INSERT OR IGNORE`). Kupione na nim bilety zostają jak każde inne: kolejny test na
+produkcji potrzebuje wolnych miejsc (decyzja o czyszczeniu należy do zespołu, nie do aplikacji).

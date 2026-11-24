@@ -38,8 +38,14 @@ function wiersz(zmiany: Partial<WierszRezerwacji> = {}): WierszRezerwacji {
     stripeSessionUrl: null,
     paymentIntentId: null,
     refundStatus: null,
+    pointsUsed: 0,
+    pointsEarned: null,
+    pointsStatus: null,
+    emailStatus: null,
     seatStatus: "reserved",
     code: null,
+    seatEmail: null,
+    customerName: null,
     movie: null,
     hall: null,
     startsAt: null,
@@ -59,16 +65,40 @@ describe("status rezerwacji", () => {
     expect(statusRezerwacji(wiersz({ seatStatus: "free" }), 1)).toBe("expired");
   });
 
-  it("odpowiedź ma kod tylko dla opłaconej i tylko, gdy wolno go pokazać", () => {
+  it("odpowiedź ma kod tylko dla opłaconej", () => {
     const oplacona = wiersz({ seatStatus: "purchased", code: "ABCD-1234" });
-    expect(stanDlaKlienta(oplacona, 1)).toEqual({ status: "paid", amount: 3200, expiresAt: 1000, code: "ABCD-1234" });
-    expect(stanDlaKlienta(wiersz({ code: "ABCD-1234" }), 1)).toEqual({ status: "held", amount: 3200, expiresAt: 1000 });
+    expect(stanDlaKlienta(oplacona, 1)).toEqual({ status: "paid", amount: 3200, expiresAt: 1000, code: "ABCD-1234", pointsUsed: 0 });
+    expect(stanDlaKlienta(wiersz({ code: "ABCD-1234" }), 1)).toEqual({ status: "held", amount: 3200, expiresAt: 1000, pointsUsed: 0 });
     expect(stanDlaKlienta(wiersz({ refundStatus: "pending" }), 2000)).toEqual({
       status: "expired",
       amount: 3200,
       expiresAt: 1000,
       refund: "pending",
+      pointsUsed: 0,
     });
+  });
+
+  it("punkty: pointsUsed zawsze, pointsEarned i stany kroków sagi tylko gdy są", () => {
+    const oplacona = wiersz({
+      seatStatus: "purchased",
+      code: "ABCD-1234",
+      pointsUsed: 1000,
+      pointsEarned: 220,
+      pointsStatus: "pending",
+      emailStatus: "sent",
+    });
+    expect(stanDlaKlienta(oplacona, 1)).toEqual({
+      status: "paid",
+      amount: 3200,
+      expiresAt: 1000,
+      code: "ABCD-1234",
+      pointsUsed: 1000,
+      pointsEarned: 220,
+      pointsStatus: "pending",
+      emailStatus: "sent",
+    });
+    // pointsEarned tylko po opłaceniu, nawet gdy w wierszu coś jest.
+    expect(stanDlaKlienta(wiersz({ pointsEarned: 220 }), 1)).not.toHaveProperty("pointsEarned");
   });
 });
 

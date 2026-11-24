@@ -84,6 +84,15 @@ describe("walidacja wejścia rezerwacji", () => {
     ).toEqual({ eventId: "metropolis-2026-11-06", seatId: "F7", name: "Jan", email: "jan@example.com" });
   });
 
+  it("błąd imienia ma nazwę pola, którą przysłał klient (dawne `name` też)", () => {
+    try {
+      walidujRezerwacje({ eventId: "metropolis-2026-11-06", seatId: "F7", name: "", email: "jan@example.com" }, "name");
+      expect.unreachable();
+    } catch (blad) {
+      expect(Object.keys((blad as BladDomenowy).szczegoly ?? {})).toEqual(["name"]);
+    }
+  });
+
   it("zbiera błędy wszystkich pól naraz (400)", () => {
     try {
       walidujRezerwacje({ eventId: 1, seatId: "I1", name: "", email: "x" });
@@ -92,7 +101,7 @@ describe("walidacja wejścia rezerwacji", () => {
       expect(blad).toBeInstanceOf(BladDomenowy);
       const b = blad as BladDomenowy;
       expect(b.status).toBe(400);
-      expect(Object.keys(b.szczegoly ?? {}).sort()).toEqual(["email", "eventId", "name", "seatId"]);
+      expect(Object.keys(b.szczegoly ?? {}).sort()).toEqual(["customerName", "email", "eventId", "seatId"]);
     }
   });
 });

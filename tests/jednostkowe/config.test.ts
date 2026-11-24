@@ -19,4 +19,10 @@ describe("konfiguracja z env", () => {
   it("limit na e-mail 0 wyłącza limit", () => {
     expect(wczytajKonfiguracje({ MAX_ACTIVE_RESERVATIONS_PER_EMAIL: "0" }).limitAktywnychNaEmail).toBe(0);
   });
+
+  it("czas na odpowiedź limitera: domyślnie 1 s, z env w granicach 50 ms – 30 s", () => {
+    expect(wczytajKonfiguracje({}).timeoutLimiteraMs).toBe(1000);
+    expect(wczytajKonfiguracje({ RATE_LIMITER_TIMEOUT_MS: "250" }).timeoutLimiteraMs).toBe(250);
+    expect(() => wczytajKonfiguracje({ RATE_LIMITER_TIMEOUT_MS: "0" })).toThrow(/RATE_LIMITER_TIMEOUT_MS/);
+  });
 });

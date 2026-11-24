@@ -22,18 +22,22 @@ export {
 } from "./dane-klienta";
 
 /** Waliduje i normalizuje dane wejściowe rezerwacji. Rzuca 400 z błędami pól. */
-export function walidujRezerwacje(surowe: {
-  eventId?: unknown;
-  seatId?: unknown;
-  name?: unknown;
-  email?: unknown;
-  idempotencyKey?: unknown;
-}): WejscieRezerwacji {
+export function walidujRezerwacje(
+  surowe: {
+    eventId?: unknown;
+    seatId?: unknown;
+    name?: unknown;
+    email?: unknown;
+    idempotencyKey?: unknown;
+  },
+  /** Pod jaką nazwą klient przysłał imię: kontrakt mówi `customerName`, a `name` zostaje dla zgodności wstecz. */
+  poleImienia: "customerName" | "name" = "customerName",
+): WejscieRezerwacji {
   const bledy: Record<string, string> = {};
   if (!czyPoprawneIdSeansu(surowe.eventId)) bledy.eventId = "Nieznany seans.";
   if (!czyPoprawneMiejsce(surowe.seatId)) bledy.seatId = "Nie ma takiego fotela na tej sali.";
   const name = normalizujImie(surowe.name);
-  if (name === null) bledy.name = KOMUNIKATY_POL.name;
+  if (name === null) bledy[poleImienia] = KOMUNIKATY_POL.name;
   const email = normalizujEmail(surowe.email);
   if (email === null) bledy.email = KOMUNIKATY_POL.email;
   if (surowe.idempotencyKey !== undefined && !czyPoprawnyKluczIdempotencji(surowe.idempotencyKey)) {

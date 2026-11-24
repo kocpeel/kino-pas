@@ -8,12 +8,16 @@
   "durable_objects": {
     "bindings": [
       { "name": "SALE", "class_name": "SalaSeansu" },
-      { "name": "LIMITER", "class_name": "LimiterZadan" }
+      { "name": "LIMITER", "class_name": "LimiterZadan" },
+      // Sam budzik outboxu pod inną nazwą niż BUDZIK: trasy w pozostałych testach dalej robią joby w tle żądania
+      // na atrapach usług, a budzik.test.ts sprawdza alarm w workerd.
+      { "name": "BUDZIK_TEST", "class_name": "BudzikOutboxu" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
-    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] },
+    { "tag": "v3", "new_sqlite_classes": ["BudzikOutboxu"] }
   ],
   // Bindingi rezerwacji celowo luźne: testy sprawdzają ścisły limiter na Durable Object (LIMITER).
   "ratelimits": [
@@ -32,6 +36,9 @@
     "DB_TIMEOUT_MS": "3000",
     "LOAD_SHED_MAX_READS": "64",
     "LOAD_SHED_MAX_WRITES": "32",
+    // Cały zestaw biegnie równolegle i obiekt limitera odpowiada wtedy wolniej niż produkcyjna 1 s, a po niej
+    // limiter przepuszcza (fail-open) i test „dokładnie 3 z 20” bywał losowy. Fail-open sprawdza test jednostkowy.
+    "RATE_LIMITER_TIMEOUT_MS": "10000",
     // Tylko testowe wartości: sieć do Stripe'a w tych testach nie wychodzi.
     "STRIPE_SECRET_KEY": "sk_test_integracyjny",
     "STRIPE_WEBHOOK_SECRET": "whsec_test_integracyjny"

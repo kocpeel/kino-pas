@@ -1,4 +1,4 @@
-# Kino Pas: kasa biletowa (Etap I)
+# Kino Pas: kasa biletowa (etapy I–III)
 
 Rezerwacja i płatność kartą przez Stripe Checkout (tryb testowy) za bilety na 3 seanse (2 sale, 8 × 10 foteli). Next.js 16 na Cloudflare Workers
 przez adapter OpenNext, baza D1, ścisły rate limiting na Durable Object (plus binding Workers Rate Limiting), mapa sali na żywo
@@ -115,6 +115,41 @@ Stripe (wyłącznie tryb testowy; klucz `sk_live_` wyłącza płatności). Sekre
    ```
 
 3. Nauczyciel jako członek zespołu w panelu Stripe, z dostępem tylko do odczytu.
+
+Etap III: punkty w Voucherify i mail przez Resend (wyłącznie tryby testowe). Bez tych sekretów płatność bez punktów
+działa dalej, a punkty i maile czekają (503 albo job w outboksie).
+
+1. Voucherify: konto (60 dni za darmo), projekt Sandbox, klucze z Project Settings → Application Keys. Kampanię
+   lojalnościową zakłada `npm run voucherify:kampania` (wypisuje jej ID). Sekrety w obu Workerach:
+
+   ```bash
+   node scripts/cloudflare.mjs wrangler secret put VOUCHERIFY_APP_ID
+   node scripts/cloudflare.mjs wrangler secret put VOUCHERIFY_SECRET_KEY
+   node scripts/cloudflare.mjs wrangler secret put VOUCHERIFY_CAMPAIGN_ID
+   ```
+
+   (to samo z `--config workers/sprzatanie/wrangler.jsonc`; `VOUCHERIFY_API_URL`, gdy klaster nie jest europejski).
+2. Resend: klucz API w Workerze z Cronem (wysyła maile) i webhook `https://<adres>/api/webhooks/resend` ze zdarzeniami
+   `email.delivered`, `email.bounced`, `email.failed`. Webhook zakłada się w panelu Resend (Webhooks → Add Endpoint),
+   bo klucz z prawem tylko do wysyłki nie zarządza webhookami; jego sekret (`whsec_…`) trafia do głównego Workera:
+
+   ```bash
+   node scripts/cloudflare.mjs wrangler secret put RESEND_API_KEY --config workers/sprzatanie/wrangler.jsonc
+   node scripts/cloudflare.mjs wrangler secret put RESEND_WEBHOOK_SECRET
+   ```
+
+   Bez własnej domeny Resend dostarcza tylko na adres właściciela konta i na adresy testowe, np. `delivered+jan@resend.dev`.
+
+Etap IV: lista oczekujących (`POST /api/events/:id/waitlist`, `GET`/`DELETE /api/waitlist/:id`, `soldOut` w szczegółach
+wydarzenia, wydarzenie testowe `waitlist-test` z dwoma miejscami z migracji 0007). Mail z ofertą wychodzi od razu, więc
+`RESEND_API_KEY` jest teraz także w głównym Workerze:
+
+```bash
+node scripts/cloudflare.mjs wrangler secret put RESEND_API_KEY
+```
+
+Joby outboxu w terminie (zwrot punktów po `expiresAt`, przesunięcie kolejki, mail z ofertą) wykonuje Durable Object
+`BudzikOutboxu` (binding `BUDZIK`, migracja Durable Objectów `v3` w `wrangler.jsonc`); Cron co minutę zostaje siatką.
 
 Tryb oceny etapu (`wrangler.jsonc`): TTL `"120"` (expiresAt ok. 2 min) i limit tylko zalewu z jednego IP (50 prób / 10 s),
 bez limitów na e-mail (`docs/decyzje.md`, sekcja 12). Po ocenie: TTL `"900"` i limity docelowe z komentarzy w

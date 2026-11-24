@@ -6,7 +6,11 @@ import Stripe from "stripe";
 import { utworzZegarTestowy, type ZegarTestowy } from "../../src/lib/czas";
 import { wczytajKonfiguracje } from "../../src/lib/config";
 import { nowyCacheOdczytow } from "../../src/lib/db/polaczenie";
+import type { UslugaPunktow } from "../../src/lib/domain/konto-punktowe";
 import type { BramkaPlatnosci, ParametrySesji, StanSesji, ZdarzeniePlatnosci } from "../../src/lib/domain/platnosc";
+import { BladMaila, type BramkaMaili, type Mail } from "../../src/lib/maile/resend";
+import type { BudzetWywolan } from "../../src/lib/punkty/budzet";
+import { BladPunktow, type BramkaPunktow, type KartaPunktow, type OpisOperacji } from "../../src/lib/punkty/voucherify";
 import type { StanRezerwacji } from "../../src/lib/domain/typy";
 import type { Limitery } from "../../src/lib/resilience/limit-zapytan";
 import { StraznikPrzeciazenia } from "../../src/lib/resilience/przeciazenie";
@@ -14,6 +18,7 @@ import {
   obsluzCheckout,
   obsluzOdczytRezerwacji,
   obsluzRezerwacje,
+  obsluzSaldo,
   obsluzWebhookStripe,
   obsluzZakup,
 } from "../../src/lib/http/trasy";
@@ -29,11 +34,14 @@ export const SEKRET_WEBHOOKA = "whsec_test_integracyjny";
 /** Każdy test zaczyna od czystych 3 seansów × 80 foteli. */
 export async function zasiej(db: D1Database = env.DB): Promise<void> {
   await db.batch([
+    db.prepare("DELETE FROM waitlist"),
     db.prepare("DELETE FROM seats"),
     db.prepare("DELETE FROM events"),
     db.prepare("DELETE FROM reservations"),
     db.prepare("DELETE FROM inbox"),
     db.prepare("DELETE FROM outbox"),
+    db.prepare("DELETE FROM sagas"),
+    db.prepare("DELETE FROM loyalty_accounts"),
   ]);
   await db.batch(zbudujSeed().map((sql) => db.prepare(sql)));
 }
@@ -46,9 +54,13 @@ export interface OpcjeZaleznosci {
   zmienne?: Record<string, string>;
   platnosci?: BramkaPlatnosci | undefined;
   sekretWebhooka?: string | undefined;
+  punkty?: UslugaPunktow | undefined;
+  sekretWebhookaResend?: string | undefined;
+  maile?: BramkaMaili | undefined;
 }
 
 export function zaleznosci(opcje: OpcjeZaleznosci = {}): Zaleznosci & { zegar: ZegarTestowy } {
+  const zegar = opcje.zegar ?? utworzZegarTestowy();
   return {
     db: "db" in opcje ? opcje.db : env.DB,
     konfiguracja: wczytajKonfiguracje({
@@ -56,13 +68,16 @@ export function zaleznosci(opcje: OpcjeZaleznosci = {}): Zaleznosci & { zegar: Z
       MAX_ACTIVE_RESERVATIONS_PER_EMAIL: "4",
       ...opcje.zmienne,
     }),
-    zegar: opcje.zegar ?? utworzZegarTestowy(),
+    zegar,
     limitery: opcje.limitery ?? {},
     // Testy współbieżności sprawdzają bazę, nie load shedding: duże pule.
     straznik: opcje.straznik ?? new StraznikPrzeciazenia({ maxOdczytow: 10_000, maxZapisow: 10_000 }),
     cache: nowyCacheOdczytow(),
-    platnosci: "platnosci" in opcje ? opcje.platnosci : sztucznaBramka(),
+    platnosci: "platnosci" in opcje ? opcje.platnosci : sztucznaBramka(zegar.teraz),
     sekretWebhooka: "sekretWebhooka" in opcje ? opcje.sekretWebhooka : SEKRET_WEBHOOKA,
+    punkty: opcje.punkty,
+    sekretWebhookaResend: opcje.sekretWebhookaResend,
+    maile: opcje.maile,
   };
 }
 
@@ -194,9 +209,127 @@ export async function stanRezerwacji(z: Zaleznosci, reservationId: string): Prom
   return odczytaj(await obsluzOdczytRezerwacji(zadanie, () => z, reservationId));
 }
 
-export async function checkout(z: Zaleznosci, reservationId: string): Promise<Wynik<{ url: string; error?: string }>> {
-  const zadanie = new Request(`https://kasa.test/api/reservations/${reservationId}/checkout`, { method: "POST" });
+export async function checkout(
+  z: Zaleznosci,
+  reservationId: string,
+  cialo?: Record<string, unknown>,
+): Promise<Wynik<{ url: string; error?: string; message?: string }>> {
+  const zadanie = new Request(`https://kasa.test/api/reservations/${reservationId}/checkout`, {
+    method: "POST",
+    ...(cialo ? { headers: { "content-type": "application/json" }, body: JSON.stringify(cialo) } : {}),
+  });
   return odczytaj(await obsluzCheckout(zadanie, () => z, reservationId));
+}
+
+export async function saldo(z: Zaleznosci, email: string): Promise<Wynik<{ email: string; points: number; error?: string }>> {
+  return odczytaj(await obsluzSaldo(new Request(`https://kasa.test/api/loyalty?email=${encodeURIComponent(email)}`), () => z));
+}
+
+// ——— Voucherify bez sieci ———
+
+export interface SztuczneKonto extends BramkaPunktow {
+  karty: Map<string, { memberId: string; saldo: number; operacje: { sourceId: string; punkty: number }[] }>;
+  /** Wywołania API (do sprawdzania budżetu). */
+  wywolania: string[];
+  /** Ustawione = każde wywołanie kończy się tym błędem (np. awaria albo limit). */
+  awaria: BladPunktow | null;
+  /** Następna zmiana salda wykona się, ale odpowiedź „zaginie” (timeout po stronie klienta). */
+  zgubOdpowiedz: boolean;
+  /** Ustawione = dodanie punktów (np. korekta) kończy się tym błędem i nic nie zmienia. */
+  odmowaDodania: BladPunktow | null;
+}
+
+/**
+ * Trzyma reguły Voucherify z dokumentacji i z sandboksa: karta na klienta (drugi zapis zwraca tę samą), saldo,
+ * historia z naszym source_id; odjęcie większe niż saldo jest obcinane do salda, a zmiana o 0 nie trafia do historii.
+ */
+export function sztuczneKonto(): SztuczneKonto {
+  let numer = 0;
+  const konto: SztuczneKonto = {
+    karty: new Map(),
+    wywolania: [],
+    awaria: null,
+    zgubOdpowiedz: false,
+    odmowaDodania: null,
+    async znajdzKarte(email) {
+      konto.wywolania.push(`znajdz:${email}`);
+      if (konto.awaria) throw konto.awaria;
+      const k = konto.karty.get(email);
+      return k ? { memberId: k.memberId, saldo: k.saldo } : null;
+    },
+    async zalozKarte(email): Promise<KartaPunktow> {
+      konto.wywolania.push(`zaloz:${email}`);
+      if (konto.awaria) throw konto.awaria;
+      const istniejaca = konto.karty.get(email);
+      if (istniejaca) return { memberId: istniejaca.memberId, saldo: istniejaca.saldo };
+      const k = { memberId: `KARTA-${++numer}`, saldo: 0, operacje: [] };
+      konto.karty.set(email, k);
+      return { memberId: k.memberId, saldo: 0 };
+    },
+    async saldo(memberId) {
+      konto.wywolania.push(`saldo:${memberId}`);
+      if (konto.awaria) throw konto.awaria;
+      return kartaPoId(memberId).saldo;
+    },
+    async zmienSaldo(memberId, punkty, opis: OpisOperacji) {
+      konto.wywolania.push(`zmiana:${memberId}:${punkty}:${opis.sourceId}`);
+      if (konto.awaria) throw konto.awaria;
+      const k = kartaPoId(memberId);
+      if (punkty > 0 && konto.odmowaDodania) throw konto.odmowaDodania;
+      // Jak sandbox: odjęcie większe niż saldo zdejmuje tylko to, co jest.
+      const zmiana = punkty < 0 ? -Math.min(k.saldo, -punkty) : punkty;
+      k.saldo += zmiana;
+      if (zmiana !== 0) k.operacje.push({ sourceId: opis.sourceId, punkty: zmiana });
+      if (konto.zgubOdpowiedz) {
+        konto.zgubOdpowiedz = false;
+        throw new BladPunktow("Voucherify nie odpowiada: timeout", "przejsciowy", { niepewny: true });
+      }
+      return { saldo: k.saldo, zmiana };
+    },
+    async zmianyWHistorii(memberId, sourceIds) {
+      konto.wywolania.push(`historia:${memberId}`);
+      if (konto.awaria) throw konto.awaria;
+      const zmiany = new Map<string, number>();
+      for (const o of kartaPoId(memberId).operacje) {
+        if (sourceIds.includes(o.sourceId)) zmiany.set(o.sourceId, (zmiany.get(o.sourceId) ?? 0) + o.punkty);
+      }
+      return zmiany;
+    },
+  };
+  function kartaPoId(memberId: string) {
+    for (const k of konto.karty.values()) if (k.memberId === memberId) return k;
+    throw new BladPunktow(`Voucherify 404 not_found: ${memberId}`, "trwaly", { status: 404 });
+  }
+  return konto;
+}
+
+export function uslugaPunktow(bramka: BramkaPunktow, opcje: { budzet?: BudzetWywolan; swiezoscSaldaMs?: number } = {}): UslugaPunktow {
+  return { bramka, budzet: opcje.budzet, swiezoscSaldaMs: opcje.swiezoscSaldaMs ?? 30_000 };
+}
+
+// ——— Resend bez sieci ———
+
+export interface SztucznyMailer extends BramkaMaili {
+  wyslane: { mail: Mail; klucz: string; id: string }[];
+  /** Ustawione = każda wysyłka kończy się tym błędem. */
+  awaria: BladMaila | null;
+}
+
+/** Klucz idempotencji jak w Resend: ta sama wysyłka drugi raz oddaje tę samą odpowiedź, bez drugiego maila. */
+export function sztucznyMailer(): SztucznyMailer {
+  const mailer: SztucznyMailer = {
+    wyslane: [],
+    awaria: null,
+    async wyslij(mail, klucz) {
+      if (mailer.awaria) throw mailer.awaria;
+      const byl = mailer.wyslane.find((w) => w.klucz === klucz);
+      if (byl) return { id: byl.id };
+      const id = `mail_${mailer.wyslane.length + 1}`;
+      mailer.wyslane.push({ mail, klucz, id });
+      return { id };
+    },
+  };
+  return mailer;
 }
 
 /** Żądanie GET (odczyty), opcjonalnie z nagłówkami, np. If-None-Match. */
@@ -221,7 +354,7 @@ export function zadanieRezerwacji(dane: DaneTestowe, opcje: { klucz?: string; ip
     body: JSON.stringify({
       eventId: dane.eventId ?? SEANS,
       seatId: dane.seatId,
-      name: dane.name ?? "Jan Testowy",
+      customerName: dane.name ?? "Jan Testowy",
       email: dane.email ?? "jan@example.com",
     }),
   });

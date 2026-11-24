@@ -33,11 +33,11 @@ describe("GET /api/events", () => {
 });
 
 describe("GET /api/events/:id", () => {
-  it("zwraca { event, takenSeats } z samymi seatId", async () => {
+  it("zwraca { event, takenSeats, soldOut } z samymi seatId", async () => {
     await exports.default.fetch(zadanieRezerwacji({ seatId: "F7", email: "k1@example.com" }, { ip: "10.1.1.1" }));
     const odp = await fetchWorkera(`/api/events/${SEANS}`);
     expect(odp.status).toBe(200);
-    expect(Object.keys((await odp.clone().json()) as object).sort()).toEqual(["event", "takenSeats"]);
+    expect(Object.keys((await odp.clone().json()) as object).sort()).toEqual(["event", "soldOut", "takenSeats"]);
     expect(await odp.json()).toEqual({
       event: {
         id: SEANS,
@@ -49,7 +49,22 @@ describe("GET /api/events/:id", () => {
         price: 3200,
       },
       takenSeats: ["F7"],
+      soldOut: false,
     });
+  });
+
+  it("etap IV: waitlist-test ma dokładnie dwa miejsca, a soldOut: true, gdy oba mają ważną rezerwację", async () => {
+    const lista = (await (await fetchWorkera("/api/events")).json()) as { id: string }[];
+    expect(lista.map((s) => s.id)).toContain("waitlist-test");
+    const przed = (await (await fetchWorkera("/api/events/waitlist-test")).json()) as { event: Record<string, unknown>; soldOut: boolean };
+    expect(przed.event).toMatchObject({ rowsCount: 1, seatsPerRow: 2 });
+    expect(przed.soldOut).toBe(false);
+    for (const [seatId, ip] of [["A1", "10.4.0.1"], ["A2", "10.4.0.2"]] as const) {
+      const odp = await exports.default.fetch(zadanieRezerwacji({ eventId: "waitlist-test", seatId, email: `${seatId}@example.com` }, { ip }));
+      expect(odp.status).toBe(201);
+    }
+    const po = (await (await fetchWorkera("/api/events/waitlist-test")).json()) as { takenSeats: string[]; soldOut: boolean };
+    expect(po).toMatchObject({ takenSeats: ["A1", "A2"], soldOut: true });
   });
 
   it("404 dla nieznanego seansu", async () => {
@@ -69,6 +84,20 @@ describe("POST /api/reservations", () => {
     expect(cialo.amount).toBe(3200);
     expect(cialo.reservationId).toMatch(/^[0-9a-f-]{36}$/);
     expect(typeof cialo.expiresAt).toBe("number");
+  });
+
+  it("imię w polu `customerName` (kontrakt); dawne `name` działa dalej, a błąd wskazuje pole klienta", async () => {
+    const rezerwuj = (cialo: Record<string, unknown>) =>
+      fetchWorkera("/api/reservations", {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-connecting-ip": "10.1.9.9" },
+        body: JSON.stringify({ eventId: SEANS, email: "pole@example.com", ...cialo }),
+      });
+    expect((await rezerwuj({ seatId: "H1", customerName: "Ala Kontrakt" })).status).toBe(201);
+    expect((await rezerwuj({ seatId: "H2", name: "Ala Dawna" })).status).toBe(201);
+    const pusty = await rezerwuj({ seatId: "H3", customerName: "" });
+    expect(pusty.status).toBe(400);
+    expect(((await pusty.json()) as { details: Record<string, string> }).details).toHaveProperty("customerName");
   });
 
   it("409 → { error: seat_taken, message }", async () => {
@@ -120,22 +149,59 @@ describe("POST /api/webhooks/stripe i GET /api/reservations/:id", () => {
     const utworzona = await exports.default.fetch(zadanieRezerwacji({ seatId: "B3", email: "k7@example.com" }, { ip: "10.1.1.7" }));
     const { reservationId, expiresAt } = (await utworzona.json()) as { reservationId: string; expiresAt: number };
     const stan = async () => (await fetchWorkera(`/api/reservations/${reservationId}`)).json();
-    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt });
+    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt, pointsUsed: 0 });
 
     const zdarzenie = zdarzenieOplacenia(reservationId);
     const zly = await exports.default.fetch(await zadanieWebhooka(zdarzenie, { sekret: "whsec_inny" }));
     expect(zly.status).toBe(400);
-    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt });
+    expect(await stan()).toEqual({ status: "held", amount: 3200, expiresAt, pointsUsed: 0 });
 
     const dobry = await exports.default.fetch(await zadanieWebhooka(zdarzenie));
     expect(dobry.status).toBe(200);
     expect(await dobry.json()).toEqual({ received: true });
-    expect(await stan()).toEqual({ status: "paid", amount: 3200, expiresAt, code: expect.stringMatching(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/) });
+    expect(await stan()).toEqual({
+      status: "paid",
+      amount: 3200,
+      expiresAt,
+      code: expect.stringMatching(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/),
+      pointsUsed: 0,
+      pointsEarned: 320,
+      pointsStatus: "pending",
+      emailStatus: "pending",
+    });
   });
 
   it("nieznana rezerwacja 404, zły identyfikator 400", async () => {
     expect((await fetchWorkera("/api/reservations/0f8fad5b-d9cb-469f-a165-70867728950e")).status).toBe(404);
     expect((await fetchWorkera("/api/reservations/abc")).status).toBe(400);
     expect((await fetchWorkera("/api/reservations/abc/checkout", { method: "POST" })).status).toBe(400);
+  });
+});
+
+describe("etap IV: lista oczekujących (pełna ścieżka)", () => {
+  it("niewyprzedane 409; potem POST 201 { waitlistId, position }, GET { status, position }, DELETE → left", async () => {
+    const zapisz = (email: string) =>
+      fetchWorkera("/api/events/waitlist-test/waitlist", {
+        method: "POST",
+        headers: { "content-type": "application/json", "cf-connecting-ip": "10.5.0.1" },
+        body: JSON.stringify({ email, customerName: "Ola Kontrakt" }),
+      });
+    const nie = await zapisz("ola@example.com");
+    expect(nie.status).toBe(409);
+    expect(((await nie.json()) as { error: string }).error).toBe("not_sold_out");
+    for (const [seatId, ip] of [["A1", "10.5.1.1"], ["A2", "10.5.1.2"]] as const) {
+      await exports.default.fetch(zadanieRezerwacji({ eventId: "waitlist-test", seatId, email: `${seatId}@example.com` }, { ip }));
+    }
+    const odp = await zapisz("ola@example.com");
+    expect(odp.status).toBe(201);
+    const zapis = (await odp.json()) as { waitlistId: string; position: number };
+    expect(Object.keys(zapis).sort()).toEqual(["position", "waitlistId"]);
+    expect(zapis.position).toBe(1);
+    const stan = await fetchWorkera(`/api/waitlist/${zapis.waitlistId}`);
+    expect(await stan.json()).toEqual({ status: "waiting", position: 1 });
+    const wypis = await fetchWorkera(`/api/waitlist/${zapis.waitlistId}`, { method: "DELETE" });
+    expect(wypis.status).toBe(200);
+    expect(await wypis.json()).toEqual({ status: "left", position: 0 });
+    expect((await fetchWorkera("/api/waitlist/abc")).status).toBe(400);
   });
 });

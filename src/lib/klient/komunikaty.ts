@@ -34,13 +34,15 @@ export function opiszBlad(blad: unknown): OpisBleduUi {
     case 404:
       return { tytul: "Nie znaleziono", tresc: blad.message, akcja: "mapa" };
     case 409:
-      return blad.kod === "reservation_already_paid"
-        ? { tytul: "Ta rezerwacja jest już opłacona", tresc: blad.message, akcja: null }
-        : { tytul: "Ten fotel został właśnie zajęty", tresc: "Wróć do mapy i wybierz inne miejsce.", akcja: "mapa" };
+      if (blad.kod === "reservation_already_paid") return { tytul: "Ta rezerwacja jest już opłacona", tresc: blad.message, akcja: null };
+      if (blad.kod === "points_locked") return { tytul: "Punkty dla tej płatności są już ustalone", tresc: blad.message, akcja: null };
+      return { tytul: "Ten fotel został właśnie zajęty", tresc: "Wróć do mapy i wybierz inne miejsce.", akcja: "mapa" };
     case 410:
       return { tytul: "Rezerwacja wygasła, fotel wrócił do puli", tresc: blad.message, akcja: "mapa" };
     case 422:
-      return { tytul: "Nie udało się powtórzyć żądania", tresc: "Spróbuj jeszcze raz.", akcja: "ponow" };
+      return blad.kod === "not_enough_points"
+        ? { tytul: "Za mało punktów", tresc: blad.message, akcja: null }
+        : { tytul: "Nie udało się powtórzyć żądania", tresc: "Spróbuj jeszcze raz.", akcja: "ponow" };
     case 429:
       return blad.kod === "too_many_active_reservations"
         ? {
@@ -54,9 +56,11 @@ export function opiszBlad(blad: unknown): OpisBleduUi {
             akcja: "ponow",
           };
     case 503:
-      return blad.kod === "payments_unavailable"
-        ? { tytul: "Płatności są chwilowo niedostępne", tresc: "Twoja rezerwacja jest bezpieczna, spróbuj za chwilę.", akcja: "ponow" }
-        : { tytul: "System jest przeciążony, spróbuj za chwilę", tresc: blad.message, akcja: "ponow" };
+      if (blad.kod === "payments_unavailable") {
+        return { tytul: "Płatności są chwilowo niedostępne", tresc: "Twoja rezerwacja jest bezpieczna, spróbuj za chwilę.", akcja: "ponow" };
+      }
+      if (blad.kod === "points_unavailable") return { tytul: "Punkty są chwilowo niedostępne", tresc: blad.message, akcja: "ponow" };
+      return { tytul: "System jest przeciążony, spróbuj za chwilę", tresc: blad.message, akcja: "ponow" };
     default:
       return { tytul: "Coś poszło nie tak", tresc: blad.message, akcja: "ponow" };
   }

@@ -80,7 +80,7 @@ describe("POST /api/reservations/:id/checkout", () => {
     expect(Object.keys(odp.cialo)).toEqual(["url"]);
     expect(odp.cialo.url).toMatch(/^https:\/\/checkout\.stripe\.test\//);
 
-    const sesja = bramka.sesje.get(`checkout:${id}`);
+    const sesja = bramka.sesje.get(`checkout:${id}:0`);
     expect(sesja?.parametry).toMatchObject({
       reservationId: id,
       amount: CENA,
@@ -342,7 +342,7 @@ describe("płatność a czas (sesja Stripe'a żyje co najmniej 30 minut, rezerwa
 
     expect((await wierszMiejsca("H1"))?.status).toBe("reserved"); // nieaktywna, fotel do wzięcia
     const stan = await stanRezerwacji(z, reservationId);
-    expect(stan.cialo).toEqual({ status: "expired", amount: CENA, expiresAt, refund: "pending" });
+    expect(stan.cialo).toEqual({ status: "expired", amount: CENA, expiresAt, refund: "pending", pointsUsed: 0 });
     expect(await jobyZwrotu()).toEqual([expect.objectContaining({ id: "stripe-refund:pi_po_czasie" })]);
     expect((await zarezerwuj(z, { seatId: "H1", email: "nastepny@example.com" })).status).toBe(201);
   });
@@ -446,12 +446,12 @@ describe("płatność a czas (sesja Stripe'a żyje co najmniej 30 minut, rezerwa
 });
 
 describe("GET /api/reservations/:id", () => {
-  it("held → dokładnie { status, amount, expiresAt }", async () => {
+  it("held → dokładnie { status, amount, expiresAt, pointsUsed }", async () => {
     const z = zaleznosci();
     const r = await zarezerwuj(z, { seatId: "B5" });
     const stan = await stanRezerwacji(z, r.cialo.reservationId);
     expect(stan.status).toBe(200);
-    expect(stan.cialo).toEqual({ status: "held", amount: CENA, expiresAt: r.cialo.expiresAt });
+    expect(stan.cialo).toEqual({ status: "held", amount: CENA, expiresAt: r.cialo.expiresAt, pointsUsed: 0 });
     expect(stan.naglowki.get("cache-control")).toBe("no-store");
   });
 
@@ -465,6 +465,10 @@ describe("GET /api/reservations/:id", () => {
       amount: CENA,
       expiresAt: r.cialo.expiresAt,
       code: kod,
+      pointsUsed: 0,
+      pointsEarned: 320,
+      pointsStatus: "pending",
+      emailStatus: "pending",
     });
   });
 
@@ -478,6 +482,7 @@ describe("GET /api/reservations/:id", () => {
     await zarezerwuj(z, { seatId: "B7", email: "n@example.com" });
     expect((await stanRezerwacji(z, r.cialo.reservationId)).cialo).toEqual({
       status: "expired",
+      pointsUsed: 0,
       amount: CENA,
       expiresAt: r.cialo.expiresAt,
     });

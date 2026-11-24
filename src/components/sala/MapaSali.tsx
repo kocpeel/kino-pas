@@ -19,6 +19,7 @@ import { czyWiadomoscStanu, sciezkaNaZywo } from "@/lib/push/protokol";
 import { CzasOdswiezenia } from "./CzasOdswiezenia";
 import { Fotel } from "./Fotel";
 import { Legenda } from "./Legenda";
+import { ListaOczekujacych } from "./ListaOczekujacych";
 
 /** Odpytywanie zapasowe (gdy kanał na żywo nie działa), gdy na sali coś się dzieje. */
 export const INTERWAL_ODSWIEZANIA_MS = 5000;
@@ -256,6 +257,9 @@ export function MapaSali({
         <span aria-hidden="true">·</span>
         <span className="cyfry">wolne {numery.length * literyRzedow.length - zajete.size}</span>
       </div>
+
+      {/* Etap IV: na wyprzedanej sali lista oczekujących (stan „wyprzedane” odświeża się razem z mapą). */}
+      <ListaOczekujacych eventId={eventId} wyprzedane={zajete.size >= numery.length * literyRzedow.length} />
 
       {polling.blad && zapasowy ? (
         <div className="banery" style={{ marginTop: "var(--odstep-4)" }}>

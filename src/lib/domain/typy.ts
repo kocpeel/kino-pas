@@ -23,6 +23,28 @@ export interface SeansNaLiscie extends Seans {
 export interface SzczegolySeansu {
   event: Seans;
   takenSeats: string[];
+  /** Etap IV: każde miejsce jest kupione albo ma ważną rezerwację (wtedy można zapisać się na listę oczekujących). */
+  soldOut: boolean;
+}
+
+/** Odpowiedź POST /api/events/:id/waitlist. */
+export interface ZapisNaListe {
+  waitlistId: string;
+  /** Miejsce w kolejce, od 1. */
+  position: number;
+}
+
+/** Odpowiedź GET /api/waitlist/:id. */
+export interface StanZapisuNaListe {
+  status: "waiting" | "offered" | "done" | "missed" | "left";
+  /** Miejsce w kolejce (od 1) dla `waiting`; 0, gdy osoba już nie czeka. */
+  position: number;
+  /** Rezerwacja z oferty (od `offered`): zwykła rezerwacja z etapu I. */
+  reservationId?: string;
+  /** Do kiedy miejsce czeka (= expiresAt rezerwacji z oferty). */
+  offerExpiresAt?: number;
+  /** Fotel z oferty (poza kontraktem: link do płatności i opis w panelu). */
+  seatId?: string;
 }
 
 /** Odpowiedź POST /api/reservations. */
@@ -44,6 +66,20 @@ export interface StanRezerwacji {
   code?: string;
   /** Tylko gdy płatność nie dała biletu (np. przyszła po wygaśnięciu) i pieniądze wracają do klienta. */
   refund?: "pending" | "done" | "failed";
+  /** Ile punktów klient wydał na tę rezerwację (0 = bez punktów). */
+  pointsUsed: number;
+  /** Punkty za zakup: tylko po opłaceniu. */
+  pointsEarned?: number;
+  /** Operacja na punktach po zakupie: naliczenie (bilet) albo oddanie wydanych punktów (brak biletu). */
+  pointsStatus?: "pending" | "done" | "failed";
+  /** Mail z biletem. */
+  emailStatus?: "pending" | "sent" | "delivered" | "bounced" | "failed";
+}
+
+/** Odpowiedź GET /api/loyalty. */
+export interface SaldoPunktow {
+  email: string;
+  points: number;
 }
 
 /** Odpowiedź POST /api/reservations/:id/checkout. */

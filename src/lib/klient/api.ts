@@ -1,7 +1,15 @@
 // Klient API dla przeglądarki: timeout na każdym fetchu, ponawianie GET z backoffem
 // i jitterem, POST rezerwacji ponawiany tylko z tym samym Idempotency-Key.
 
-import type { SesjaPlatnosci, StanRezerwacji, SzczegolySeansu, UtworzonaRezerwacja } from "../domain/typy";
+import type {
+  SaldoPunktow,
+  SesjaPlatnosci,
+  StanRezerwacji,
+  StanZapisuNaListe,
+  SzczegolySeansu,
+  UtworzonaRezerwacja,
+  ZapisNaListe,
+} from "../domain/typy";
 
 export const TIMEOUT_MS = 8000;
 const BAZA_BACKOFF_MS = 300;
@@ -184,7 +192,8 @@ export function nowyKluczIdempotencji(): string {
 export interface DaneRezerwacji {
   eventId: string;
   seatId: string;
-  name: string;
+  /** Imię klienta: pole kontraktu `customerName`. */
+  customerName: string;
   email: string;
 }
 
@@ -225,10 +234,58 @@ export function pobierzRezerwacje(reservationId: string, opcje: OpcjeZadania = {
 /** Serwer pyta Stripe'a, a ten ma własne timeouty i ponowienia, więc czekamy dłużej niż zwykle. */
 const TIMEOUT_PLATNOSCI_MS = 20_000;
 
-/** Bezpieczne do ponawiania: każda próba dla tej rezerwacji daje tę samą sesję płatności. */
-export function utworzPlatnosc(reservationId: string, opcje: OpcjeZadania = {}): Promise<SesjaPlatnosci> {
-  const { sygnal, proby = 2, timeoutMs = TIMEOUT_PLATNOSCI_MS } = opcje;
+/**
+ * Bezpieczne do ponawiania: każda próba dla tej rezerwacji daje tę samą sesję płatności, a punkty schodzą
+ * z konta raz. Bez `punkty` (albo 0) płatność jak w etapie II.
+ */
+export function utworzPlatnosc(reservationId: string, opcje: OpcjeZadania & { punkty?: number } = {}): Promise<SesjaPlatnosci> {
+  const { sygnal, proby = 2, timeoutMs = TIMEOUT_PLATNOSCI_MS, punkty } = opcje;
+  const init: RequestInit = punkty
+    ? { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ points: punkty }) }
+    : { method: "POST" };
   return zPonowieniami(proby, sygnal, () =>
-    wykonaj<SesjaPlatnosci>(`/api/reservations/${encodeURIComponent(reservationId)}/checkout`, { method: "POST" }, sygnal, timeoutMs),
+    wykonaj<SesjaPlatnosci>(`/api/reservations/${encodeURIComponent(reservationId)}/checkout`, init, sygnal, timeoutMs),
+  ).then((o) => o.dane);
+}
+
+/** Saldo punktów klienta. E-mail idzie w adresie zapytania (tak mówi kontrakt), ale fetch nie trafia do historii. */
+export function pobierzSaldo(email: string, opcje: OpcjeZadania = {}): Promise<SaldoPunktow> {
+  const { sygnal, proby = 2, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<SaldoPunktow>(`/api/loyalty?email=${encodeURIComponent(email)}`, { cache: "no-store" }, sygnal, timeoutMs),
+  ).then((o) => o.dane);
+}
+
+// ——— Etap IV: lista oczekujących ———
+
+/** Zapis na listę oczekujących wyprzedanego wydarzenia. Ten sam e-mail drugi raz oddaje ten sam zapis. */
+export function zapiszNaListe(
+  eventId: string,
+  dane: { email: string; customerName: string },
+  opcje: OpcjeZadania = {},
+): Promise<ZapisNaListe> {
+  const { sygnal, proby = 2, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<ZapisNaListe>(
+      `/api/events/${encodeURIComponent(eventId)}/waitlist`,
+      { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(dane) },
+      sygnal,
+      timeoutMs,
+    ),
+  ).then((o) => o.dane);
+}
+
+export function pobierzZapisNaListe(waitlistId: string, opcje: OpcjeZadania = {}): Promise<StanZapisuNaListe> {
+  const { sygnal, proby = 1, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<StanZapisuNaListe>(`/api/waitlist/${encodeURIComponent(waitlistId)}`, { cache: "no-store" }, sygnal, timeoutMs),
+  ).then((o) => o.dane);
+}
+
+/** Wypisanie z listy: bezpieczne do ponawiania (drugie wypisanie niczego nie zmienia). */
+export function wypiszZListy(waitlistId: string, opcje: OpcjeZadania = {}): Promise<StanZapisuNaListe> {
+  const { sygnal, proby = 2, timeoutMs } = opcje;
+  return zPonowieniami(proby, sygnal, () =>
+    wykonaj<StanZapisuNaListe>(`/api/waitlist/${encodeURIComponent(waitlistId)}`, { method: "DELETE" }, sygnal, timeoutMs),
   ).then((o) => o.dane);
 }

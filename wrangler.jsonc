@@ -16,15 +16,18 @@
   "observability": { "enabled": true },
 
   // Jeden Durable Object na seans: trzyma połączenia WebSocket oglądających mapę i rozsyła zmiany.
+  // LIMITER: ścisłe limity i budżet Voucherify. BUDZIK: jeden obiekt, który wykonuje joby outboxu w ich terminie.
   "durable_objects": {
     "bindings": [
       { "name": "SALE", "class_name": "SalaSeansu" },
-      { "name": "LIMITER", "class_name": "LimiterZadan" }
+      { "name": "LIMITER", "class_name": "LimiterZadan" },
+      { "name": "BUDZIK", "class_name": "BudzikOutboxu" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
-    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+    { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] },
+    { "tag": "v3", "new_sqlite_classes": ["BudzikOutboxu"] }
   ],
 
   "d1_databases": [
@@ -63,7 +66,16 @@
     "DB_TIMEOUT_MS": "3000",
     "LOAD_SHED_MAX_READS": "64",
     "LOAD_SHED_MAX_WRITES": "32",
-    "LOAD_SHED_DB_LATENCY_TARGET_MS": "800"
+    "LOAD_SHED_DB_LATENCY_TARGET_MS": "800",
+    // Etap III. Sandbox Voucherify przyjmuje 100 wywołań na godzinę: liczymy je sami (wspólnie z Workerem Crona),
+    // z zapasem 10, a odczyty salda (GET /api/loyalty) dostają najwyżej 40, żeby zostały wywołania na zakupy.
+    // Saldo z pamięci podręcznej uchodzi za aktualne przez 30 s.
+    // Sekrety: VOUCHERIFY_APP_ID, VOUCHERIFY_SECRET_KEY, VOUCHERIFY_CAMPAIGN_ID (i opcjonalnie VOUCHERIFY_API_URL),
+    // RESEND_API_KEY (w obu Workerach: maile wysyła Cron i budzik outboxu) i RESEND_WEBHOOK_SECRET (tu: los maila).
+    // Zob. README.
+    "VOUCHERIFY_CALLS_PER_HOUR": "90",
+    "VOUCHERIFY_READS_PER_HOUR": "40",
+    "LOYALTY_CACHE_SECONDS": "30"
   },
 
   "env": {
@@ -96,7 +108,10 @@
         "DB_TIMEOUT_MS": "3000",
         "LOAD_SHED_MAX_READS": "64",
         "LOAD_SHED_MAX_WRITES": "32",
-        "LOAD_SHED_DB_LATENCY_TARGET_MS": "800"
+        "LOAD_SHED_DB_LATENCY_TARGET_MS": "800",
+        "VOUCHERIFY_CALLS_PER_HOUR": "100000",
+        "VOUCHERIFY_READS_PER_HOUR": "100000",
+        "LOYALTY_CACHE_SECONDS": "0"
       }
     },
 
@@ -109,12 +124,14 @@
       "durable_objects": {
         "bindings": [
           { "name": "SALE", "class_name": "SalaSeansu" },
-          { "name": "LIMITER", "class_name": "LimiterZadan" }
+          { "name": "LIMITER", "class_name": "LimiterZadan" },
+          { "name": "BUDZIK", "class_name": "BudzikOutboxu" }
         ]
       },
       "migrations": [
         { "tag": "v1", "new_sqlite_classes": ["SalaSeansu"] },
-        { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] }
+        { "tag": "v2", "new_sqlite_classes": ["LimiterZadan"] },
+        { "tag": "v3", "new_sqlite_classes": ["BudzikOutboxu"] }
       ],
       "d1_databases": [
         {
@@ -140,7 +157,12 @@
         "DB_TIMEOUT_MS": "3000",
         "LOAD_SHED_MAX_READS": "64",
         "LOAD_SHED_MAX_WRITES": "32",
-        "LOAD_SHED_DB_LATENCY_TARGET_MS": "800"
+        "LOAD_SHED_DB_LATENCY_TARGET_MS": "800",
+        // Staging dzieli sandbox Voucherify (100 wywołań/h) z produkcją, która ma 90: tu tylko tyle, żeby nie zabrać
+        // produkcji jej części. Staging nie ma Crona, więc wywołuje Voucherify tylko przy saldzie i checkoucie.
+        "VOUCHERIFY_CALLS_PER_HOUR": "10",
+        "VOUCHERIFY_READS_PER_HOUR": "5",
+        "LOYALTY_CACHE_SECONDS": "30"
       }
     }
   }
